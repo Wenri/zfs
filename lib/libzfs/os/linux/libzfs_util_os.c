@@ -38,6 +38,8 @@
 #include <libzfs.h>
 #include <libzfs_core.h>
 
+static int zfs_major_ver, zfs_minor_ver;
+
 #include "libzfs_impl.h"
 #include "zfs_prop.h"
 #include <libzutil.h>
@@ -48,7 +50,120 @@
 int
 zfs_ioctl(libzfs_handle_t *hdl, int request, zfs_cmd_t *zc)
 {
-	return (ioctl(hdl->libzfs_fd, request, zc));
+	zfs_cmd_V065_t zc_065;
+	int rc;
+
+	if ((zfs_major_ver * 100) + zfs_minor_ver >= 7)
+		return (ioctl(hdl->libzfs_fd, request, zc));
+
+	memcpy(zc_065.zc_name, zc->zc_name, sizeof zc_065.zc_name);
+	zc_065.zc_nvlist_src = zc->zc_nvlist_src;
+	zc_065.zc_nvlist_src_size = zc->zc_nvlist_src_size;
+	zc_065.zc_nvlist_dst = zc->zc_nvlist_dst;
+	zc_065.zc_nvlist_dst_size = zc->zc_nvlist_dst_size;
+	zc_065.zc_nvlist_dst_filled = zc->zc_nvlist_dst_filled;
+	zc_065.zc_pad2 = zc->zc_pad2;
+	zc_065.zc_history = zc->zc_history;
+	memcpy(zc_065.zc_value, zc->zc_value, sizeof zc_065.zc_value);
+	memcpy(zc_065.zc_string, zc->zc_string, sizeof zc_065.zc_string);
+	zc_065.zc_guid = zc->zc_guid;
+	zc_065.zc_nvlist_conf = zc->zc_nvlist_conf;
+	zc_065.zc_nvlist_conf_size = zc->zc_nvlist_conf_size;
+	zc_065.zc_cookie = zc->zc_cookie;
+	zc_065.zc_objset_type = zc->zc_objset_type;
+	zc_065.zc_perm_action = zc->zc_perm_action;
+	zc_065.zc_history_len = zc->zc_history_len;
+	zc_065.zc_history_offset = zc->zc_history_offset;
+	zc_065.zc_obj = zc->zc_obj;
+	zc_065.zc_iflags = zc->zc_iflags;
+	zc_065.zc_share = zc->zc_share;
+	zc_065.zc_objset_stats = zc->zc_objset_stats;
+	zc_065.zc_begin_record = zc->zc_begin_record;
+
+	zc_065.zc_inject_record.zi_objset = zc->zc_inject_record.zi_objset;
+	zc_065.zc_inject_record.zi_object = zc->zc_inject_record.zi_object;
+	zc_065.zc_inject_record.zi_start = zc->zc_inject_record.zi_start;
+	zc_065.zc_inject_record.zi_end = zc->zc_inject_record.zi_end;
+	zc_065.zc_inject_record.zi_guid = zc->zc_inject_record.zi_guid;
+	zc_065.zc_inject_record.zi_level = zc->zc_inject_record.zi_level;
+	zc_065.zc_inject_record.zi_error = zc->zc_inject_record.zi_error;
+	zc_065.zc_inject_record.zi_type = zc->zc_inject_record.zi_type;
+	zc_065.zc_inject_record.zi_freq = zc->zc_inject_record.zi_freq;
+	zc_065.zc_inject_record.zi_failfast = zc->zc_inject_record.zi_failfast;
+	memcpy(zc_065.zc_inject_record.zi_func, zc->zc_inject_record.zi_func, sizeof zc_065.zc_inject_record.zi_func);
+	zc_065.zc_inject_record.zi_iotype = zc->zc_inject_record.zi_iotype;
+	zc_065.zc_inject_record.zi_duration = zc->zc_inject_record.zi_duration;
+	zc_065.zc_inject_record.zi_timer = zc->zc_inject_record.zi_timer;
+	zc_065.zc_inject_record.zi_cmd = zc->zc_inject_record.zi_cmd;
+	zc_065.zc_inject_record.zi_pad = 0;
+
+	zc_065.zc_defer_destroy = zc->zc_defer_destroy;
+	zc_065.zc_flags = zc->zc_flags;
+	zc_065.zc_action_handle = zc->zc_action_handle;
+	zc_065.zc_cleanup_fd = zc->zc_cleanup_fd;
+	zc_065.zc_simple = zc->zc_simple;
+	memcpy(zc_065.zc_pad, zc->zc_pad, sizeof zc_065.zc_pad);
+	zc_065.zc_sendobj = zc->zc_sendobj;
+	zc_065.zc_fromobj = zc->zc_fromobj;
+	zc_065.zc_createtxg = zc->zc_createtxg;
+	zc_065.zc_stat = zc->zc_stat;
+
+	rc = ioctl(hdl->libzfs_fd, request, &zc_065);
+
+	memcpy(zc->zc_name, zc_065.zc_name, sizeof zc->zc_name);
+	zc->zc_nvlist_src = zc_065.zc_nvlist_src;
+	zc->zc_nvlist_src_size = zc_065.zc_nvlist_src_size;
+	zc->zc_nvlist_dst = zc_065.zc_nvlist_dst;
+	zc->zc_nvlist_dst_size = zc_065.zc_nvlist_dst_size;
+	zc->zc_nvlist_dst_filled = zc_065.zc_nvlist_dst_filled;
+	zc->zc_pad2 = zc_065.zc_pad2;
+	zc->zc_history = zc_065.zc_history;
+	memcpy(zc->zc_value, zc_065.zc_value, sizeof zc->zc_value);
+	memcpy(zc->zc_string, zc_065.zc_string, sizeof zc->zc_string);
+	zc->zc_guid = zc_065.zc_guid;
+	zc->zc_nvlist_conf = zc_065.zc_nvlist_conf;
+	zc->zc_nvlist_conf_size = zc_065.zc_nvlist_conf_size;
+	zc->zc_cookie = zc_065.zc_cookie;
+	zc->zc_objset_type = zc_065.zc_objset_type;
+	zc->zc_perm_action = zc_065.zc_perm_action;
+	zc->zc_history_len = zc_065.zc_history_len;
+	zc->zc_history_offset = zc_065.zc_history_offset;
+	zc->zc_obj = zc_065.zc_obj;
+	zc->zc_iflags = zc_065.zc_iflags;
+	zc->zc_share = zc_065.zc_share;
+	zc->zc_objset_stats = zc_065.zc_objset_stats;
+	zc->zc_begin_record = zc_065.zc_begin_record;
+
+	zc->zc_inject_record.zi_objset = zc_065.zc_inject_record.zi_objset;
+	zc->zc_inject_record.zi_object = zc_065.zc_inject_record.zi_object;
+	zc->zc_inject_record.zi_start = zc_065.zc_inject_record.zi_start;
+	zc->zc_inject_record.zi_end = zc_065.zc_inject_record.zi_end;
+	zc->zc_inject_record.zi_guid = zc_065.zc_inject_record.zi_guid;
+	zc->zc_inject_record.zi_level = zc_065.zc_inject_record.zi_level;
+	zc->zc_inject_record.zi_error = zc_065.zc_inject_record.zi_error;
+	zc->zc_inject_record.zi_type = zc_065.zc_inject_record.zi_type;
+	zc->zc_inject_record.zi_freq = zc_065.zc_inject_record.zi_freq;
+	zc->zc_inject_record.zi_failfast = zc_065.zc_inject_record.zi_failfast;
+	memcpy(zc->zc_inject_record.zi_func, zc_065.zc_inject_record.zi_func, sizeof zc->zc_inject_record.zi_func);
+	zc->zc_inject_record.zi_iotype = zc_065.zc_inject_record.zi_iotype;
+	zc->zc_inject_record.zi_duration = zc_065.zc_inject_record.zi_duration;
+	zc->zc_inject_record.zi_timer = zc_065.zc_inject_record.zi_timer;
+	zc->zc_inject_record.zi_nlanes = 0;
+	zc->zc_inject_record.zi_cmd = zc_065.zc_inject_record.zi_cmd;
+	zc->zc_inject_record.zi_dvas = 0;
+
+	zc->zc_defer_destroy = zc_065.zc_defer_destroy;
+	zc->zc_flags = zc_065.zc_flags;
+	zc->zc_action_handle = zc_065.zc_action_handle;
+	zc->zc_cleanup_fd = zc_065.zc_cleanup_fd;
+	zc->zc_simple = zc_065.zc_simple;
+	memcpy(zc->zc_pad, zc_065.zc_pad, sizeof zc->zc_pad);
+	zc->zc_sendobj = zc_065.zc_sendobj;
+	zc->zc_fromobj = zc_065.zc_fromobj;
+	zc->zc_createtxg = zc_065.zc_createtxg;
+	zc->zc_stat = zc_065.zc_stat;
+
+	return rc;
 }
 
 const char *
@@ -79,11 +194,22 @@ libzfs_error_init(int error)
 static int
 libzfs_module_loaded(const char *module)
 {
+	FILE *fp;
 	const char path_prefix[] = "/sys/module/";
 	char path[256];
 
 	memcpy(path, path_prefix, sizeof (path_prefix) - 1);
 	strcpy(path + sizeof (path_prefix) - 1, module);
+
+	strcpy(path + sizeof (path_prefix) - 1 + strlen(module), "/version");
+	fp = fopen(path, "r");
+	if (fp) {
+		if (fscanf(fp, "%d.%d", &zfs_major_ver, &zfs_minor_ver) != 2) {
+			zfs_major_ver = 0;
+			zfs_minor_ver = 0;
+		}
+		fclose(fp);
+	}
 
 	return (access(path, F_OK) == 0);
 }
@@ -106,6 +232,15 @@ libzfs_load_module_impl(const char *module)
 	long busy_timeout = 10; /* milliseconds */
 	int load = 0, fd;
 	hrtime_t start;
+
+	/*
+	 * If inside a container, set the timeout to zero (LP: #1760173),
+	 * however, this can be over-ridden by ZFS_MODULE_TIMEOUT just
+	 * in case the user explicitly wants to set the timeout for some
+	 * reason just for backward compatibilty
+	 */
+	if (access("/run/systemd/container", R_OK) == 0)
+		timeout = 0;
 
 	/* Optionally request module loading */
 	if (!libzfs_module_loaded(module)) {

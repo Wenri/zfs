@@ -100,10 +100,10 @@ typeset -a pos_cmds_out=(
 # the same as the input and the --sort-keys option was added.  Detect when
 # --sort-keys is supported and apply the option to ensure the expected order.
 #
-if python -m json.tool --sort-keys <<< "{}"; then
-	JSON_TOOL_CMD="python -m json.tool --sort-keys"
+if python3 -m json.tool --sort-keys <<< "{}"; then
+	JSON_TOOL_CMD="python3 -m json.tool --sort-keys"
 else
-	JSON_TOOL_CMD="python -m json.tool"
+	JSON_TOOL_CMD="python3 -m json.tool"
 fi
 
 typeset -i cnt=0
