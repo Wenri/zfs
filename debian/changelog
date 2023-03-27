@@ -1,4 +1,4 @@
-zfs-linux (2.1.6-0york1~22.04) jammy; urgency=medium
+zfs-linux (2.1.6-1gbc~york1) jammy; urgency=medium
 
   * New upstream release
   * Update symbols files
