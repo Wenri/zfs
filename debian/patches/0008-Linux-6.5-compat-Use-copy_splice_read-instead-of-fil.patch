@@ -1,0 +1,100 @@
+From 27c38bf179eaecdc162877c984b689128d61da3f Mon Sep 17 00:00:00 2001
+From: Coleman Kane <ckane@colemankane.org>
+Date: Tue, 8 Aug 2023 18:42:32 -0400
+Subject: [PATCH 8/8] Linux 6.5 compat: Use copy_splice_read instead of
+ filemap_splice_read
+
+Using the filemap_splice_read function for the splice_read handler was
+leading to occasional data corruption under certain circumstances. Favor
+using copy_splice_read instead, which does not demonstrate the same
+erroneous behavior under the tested failure cases.
+
+Reviewed-by: Brian Atkinson <batkinson@lanl.gov>
+Reviewed-by: Brian Behlendorf <behlendorf1@llnl.gov>
+Signed-off-by: Coleman Kane <ckane@colemankane.org>
+Closes #15164
+(cherry picked from commit 8ce2eba9e6a384feef93d77c397f37d17dc588ce)
+---
+ config/kernel-filemap-splice-read.m4 | 18 +++++++++---------
+ config/kernel.m4                     |  4 ++--
+ module/os/linux/zfs/zpl_file.c       |  4 ++--
+ 3 files changed, 13 insertions(+), 13 deletions(-)
+
+diff --git a/config/kernel-filemap-splice-read.m4 b/config/kernel-filemap-splice-read.m4
+index 5199b7373e..4c83b31d73 100644
+--- a/config/kernel-filemap-splice-read.m4
++++ b/config/kernel-filemap-splice-read.m4
+@@ -1,24 +1,24 @@
+-AC_DEFUN([ZFS_AC_KERNEL_SRC_FILEMAP_SPLICE_READ], [
++AC_DEFUN([ZFS_AC_KERNEL_SRC_COPY_SPLICE_READ], [
+ 	dnl #
+ 	dnl # Kernel 6.5 - generic_file_splice_read was removed in favor
+-	dnl # of filemap_splice_read for the .splice_read member of the
++	dnl # of copy_splice_read for the .splice_read member of the
+ 	dnl # file_operations struct.
+ 	dnl #
+-	ZFS_LINUX_TEST_SRC([has_filemap_splice_read], [
++	ZFS_LINUX_TEST_SRC([has_copy_splice_read], [
+ 		#include <linux/fs.h>
+ 
+ 		struct file_operations fops __attribute__((unused)) = {
+-			.splice_read = filemap_splice_read,
++			.splice_read = copy_splice_read,
+ 		};
+ 	],[])
+ ])
+ 
+-AC_DEFUN([ZFS_AC_KERNEL_FILEMAP_SPLICE_READ], [
+-	AC_MSG_CHECKING([whether filemap_splice_read() exists])
+-	ZFS_LINUX_TEST_RESULT([has_filemap_splice_read], [
++AC_DEFUN([ZFS_AC_KERNEL_COPY_SPLICE_READ], [
++	AC_MSG_CHECKING([whether copy_splice_read() exists])
++	ZFS_LINUX_TEST_RESULT([has_copy_splice_read], [
+ 		AC_MSG_RESULT(yes)
+-		AC_DEFINE(HAVE_FILEMAP_SPLICE_READ, 1,
+-		    [filemap_splice_read exists])
++		AC_DEFINE(HAVE_COPY_SPLICE_READ, 1,
++		    [copy_splice_read exists])
+ 	],[
+ 		AC_MSG_RESULT(no)
+ 	])
+diff --git a/config/kernel.m4 b/config/kernel.m4
+index 309f1819be..df194ec722 100644
+--- a/config/kernel.m4
++++ b/config/kernel.m4
+@@ -161,7 +161,7 @@ AC_DEFUN([ZFS_AC_KERNEL_TEST_SRC], [
+ 	ZFS_AC_KERNEL_SRC_WRITEPAGE_T
+ 	ZFS_AC_KERNEL_SRC_RECLAIMED
+ 	ZFS_AC_KERNEL_SRC_REGISTER_SYSCTL_TABLE
+-	ZFS_AC_KERNEL_SRC_FILEMAP_SPLICE_READ
++	ZFS_AC_KERNEL_SRC_COPY_SPLICE_READ
+ 	case "$host_cpu" in
+ 		powerpc*)
+ 			ZFS_AC_KERNEL_SRC_CPU_HAS_FEATURE
+@@ -302,7 +302,7 @@ AC_DEFUN([ZFS_AC_KERNEL_TEST_RESULT], [
+ 	ZFS_AC_KERNEL_WRITEPAGE_T
+ 	ZFS_AC_KERNEL_RECLAIMED
+ 	ZFS_AC_KERNEL_REGISTER_SYSCTL_TABLE
+-	ZFS_AC_KERNEL_FILEMAP_SPLICE_READ
++	ZFS_AC_KERNEL_COPY_SPLICE_READ
+ 	case "$host_cpu" in
+ 		powerpc*)
+ 			ZFS_AC_KERNEL_CPU_HAS_FEATURE
+diff --git a/module/os/linux/zfs/zpl_file.c b/module/os/linux/zfs/zpl_file.c
+index 24cc1064a8..3caa0fc6c2 100644
+--- a/module/os/linux/zfs/zpl_file.c
++++ b/module/os/linux/zfs/zpl_file.c
+@@ -1323,8 +1323,8 @@ const struct file_operations zpl_file_operations = {
+ 	.read_iter	= zpl_iter_read,
+ 	.write_iter	= zpl_iter_write,
+ #ifdef HAVE_VFS_IOV_ITER
+-#ifdef HAVE_FILEMAP_SPLICE_READ
+-	.splice_read	= filemap_splice_read,
++#ifdef HAVE_COPY_SPLICE_READ
++	.splice_read	= copy_splice_read,
+ #else
+ 	.splice_read	= generic_file_splice_read,
+ #endif
+-- 
+2.34.1
+

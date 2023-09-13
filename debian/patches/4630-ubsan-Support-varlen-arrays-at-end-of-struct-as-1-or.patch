@@ -1,0 +1,147 @@
+From: Coleman Kane <ckane@colemankane.org>
+Subject: [PATCH] [ubsan] Support varlen arrays at end of struct as [1] or []
+Origin: https://github.com/ckane/zfs.git
+
+The --enable-ubsan configure feature complains when we index variable
+length arrays at the end of some structs because the arrays size is
+defined to be 1. Newer C compilers support declaring these as
+variable-sized using [] in the struct member type definition, which also
+quiets the UBSAN complaint. Test for this support in configure and use
+it if it is supported by the compiler.
+
+Signed-off-by: Coleman Kane <ckane@colemankane.org>
+---
+ config/zfs-build.m4                   | 27 +++++++++++++++++++++++++++
+ include/os/linux/spl/sys/kmem_cache.h |  3 ++-
+ include/sys/sa_impl.h                 |  7 +++++--
+ include/sys/vdev_raidz_impl.h         |  5 +++--
+ include/sys/zap_impl.h                |  2 +-
+ include/sys/zap_leaf.h                |  2 +-
+ 6 files changed, 39 insertions(+), 7 deletions(-)
+
+diff --git a/config/zfs-build.m4 b/config/zfs-build.m4
+index 2703e6c01..5e11244ef 100644
+--- a/config/zfs-build.m4
++++ b/config/zfs-build.m4
+@@ -231,6 +231,7 @@ AC_DEFUN([ZFS_AC_CONFIG_ALWAYS], [
+ 	ZFS_AC_CONFIG_ALWAYS_CPPCHECK
+ 	ZFS_AC_CONFIG_ALWAYS_SHELLCHECK
+ 	ZFS_AC_CONFIG_ALWAYS_PARALLEL
++	ZFS_AC_CONFIG_ALWAYS_CC_VARSIZE_ARRAY_IN_STRUCT
+ ])
+ 
+ AC_DEFUN([ZFS_AC_CONFIG], [
+@@ -630,3 +631,29 @@ AC_DEFUN([ZFS_AC_PACKAGE], [
+ 		ZFS_AC_ALIEN
+ 	])
+ ])
++
++dnl #
++dnl # Test whether C compiler supports variable-length array at the
++dnl # end of a struct definition, and if it needs a constant or not
++dnl # declaring a size
++dnl #
++AC_DEFUN([ZFS_AC_CONFIG_ALWAYS_CC_VARSIZE_ARRAY_IN_STRUCT], [
++	AC_MSG_CHECKING(
++	    [if C compiler handles empty-index var-length array members])
++	AC_COMPILE_IFELSE([AC_LANG_SOURCE([
++		struct s {
++			int a;
++			int v[];
++		};
++
++		struct s test_array __attribute__((unused));
++	])], [
++		AC_MSG_RESULT([yes])
++		AC_DEFINE([VARLEN_ARRAY_IDX], [],
++		    [Index to use for variable-length array struct members])
++	], [
++		AC_MSG_RESULT([no])
++		AC_DEFINE([VARLEN_ARRAY_IDX], 1,
++		    [Index to use for variable-length array struct members])
++	])
++])
+diff --git a/include/os/linux/spl/sys/kmem_cache.h b/include/os/linux/spl/sys/kmem_cache.h
+index 20eeadc46..20ea76fb5 100644
+--- a/include/os/linux/spl/sys/kmem_cache.h
++++ b/include/os/linux/spl/sys/kmem_cache.h
+@@ -108,7 +108,8 @@ typedef struct spl_kmem_magazine {
+ 	uint32_t		skm_refill;	/* Batch refill size */
+ 	struct spl_kmem_cache	*skm_cache;	/* Owned by cache */
+ 	unsigned int		skm_cpu;	/* Owned by cpu */
+-	void			*skm_objs[0];	/* Object pointers */
++	/* Object pointers */
++	void			*skm_objs[VARLEN_ARRAY_IDX];
+ } spl_kmem_magazine_t;
+ 
+ typedef struct spl_kmem_obj {
+diff --git a/include/sys/sa_impl.h b/include/sys/sa_impl.h
+index 744c8dcb7..38154062f 100644
+--- a/include/sys/sa_impl.h
++++ b/include/sys/sa_impl.h
+@@ -177,8 +177,11 @@ typedef struct sa_hdr_phys {
+ 	 *
+ 	 */
+ 	uint16_t sa_layout_info;
+-	uint16_t sa_lengths[1];	/* optional sizes for variable length attrs */
+-	/* ... Data follows the lengths.  */
++	uint16_t sa_lengths[VARLEN_ARRAY_IDX];
++	/*
++	 * optional sizes for variable length attrs
++	 * ... Data follows the lengths.
++	 */
+ } sa_hdr_phys_t;
+ 
+ #define	SA_HDR_LAYOUT_NUM(hdr) BF32_GET(hdr->sa_layout_info, 0, 10)
+diff --git a/include/sys/vdev_raidz_impl.h b/include/sys/vdev_raidz_impl.h
+index c1037fa12..969b5c659 100644
+--- a/include/sys/vdev_raidz_impl.h
++++ b/include/sys/vdev_raidz_impl.h
+@@ -130,7 +130,8 @@ typedef struct raidz_row {
+ 	uint64_t rr_offset;		/* Logical offset for *_io_verify() */
+ 	uint64_t rr_size;		/* Physical size for *_io_verify() */
+ #endif
+-	raidz_col_t rr_col[0];		/* Flexible array of I/O columns */
++	/* Flexible array of I/O columns */
++	raidz_col_t rr_col[VARLEN_ARRAY_IDX];
+ } raidz_row_t;
+ 
+ typedef struct raidz_map {
+@@ -139,7 +140,7 @@ typedef struct raidz_map {
+ 	int rm_nskip;			/* RAIDZ sectors skipped for padding */
+ 	int rm_skipstart;		/* Column index of padding start */
+ 	const raidz_impl_ops_t *rm_ops;	/* RAIDZ math operations */
+-	raidz_row_t *rm_row[0];		/* flexible array of rows */
++	raidz_row_t *rm_row[VARLEN_ARRAY_IDX];	/* flexible array of rows */
+ } raidz_map_t;
+ 
+ 
+diff --git a/include/sys/zap_impl.h b/include/sys/zap_impl.h
+index 74853f5fa..089fb97b0 100644
+--- a/include/sys/zap_impl.h
++++ b/include/sys/zap_impl.h
+@@ -61,7 +61,7 @@ typedef struct mzap_phys {
+ 	uint64_t mz_salt;
+ 	uint64_t mz_normflags;
+ 	uint64_t mz_pad[5];
+-	mzap_ent_phys_t mz_chunk[1];
++	mzap_ent_phys_t mz_chunk[VARLEN_ARRAY_IDX];
+ 	/* actually variable size depending on block size */
+ } mzap_phys_t;
+ 
+diff --git a/include/sys/zap_leaf.h b/include/sys/zap_leaf.h
+index ebc67c2bf..0a0d24553 100644
+--- a/include/sys/zap_leaf.h
++++ b/include/sys/zap_leaf.h
+@@ -132,7 +132,7 @@ typedef struct zap_leaf_phys {
+ 	 * with the ZAP_LEAF_CHUNK() macro.
+ 	 */
+ 
+-	uint16_t l_hash[1];
++	uint16_t l_hash[VARLEN_ARRAY_IDX];
+ } zap_leaf_phys_t;
+ 
+ typedef union zap_leaf_chunk {
+-- 
+2.40.1
+

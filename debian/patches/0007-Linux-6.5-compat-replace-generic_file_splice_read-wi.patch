@@ -1,0 +1,113 @@
+From 4303c523084b4bc82a0e97a118efd39d0616403f Mon Sep 17 00:00:00 2001
+From: Coleman Kane <ckane@colemankane.org>
+Date: Mon, 7 Aug 2023 18:47:46 -0400
+Subject: [PATCH 7/8] Linux 6.5 compat: replace generic_file_splice_read with
+ filemap_splice_read
+
+The generic_file_splice_read function was removed in Linux 6.5 in favor
+of filemap_splice_read. Add an autoconf test for filemap_splice_read and
+use it if it is found as the handler for .splice_read in the
+file_operations struct. Additionally, ITER_PIPE was removed in 6.5. This
+change removes the ITER_* macros that OpenZFS doesn't use from being
+tested in config/kernel-vfs-iov_iter.m4. The removal of ITER_PIPE was
+causing the test to fail, which also affected the code responsible for
+setting the .splice_read handler, above. That behavior caused run-time
+panics on Linux 6.5.
+
+Reviewed-by: Brian Atkinson <batkinson@lanl.gov>
+Reviewed-by: Brian Behlendorf <behlendorf1@llnl.gov>
+Signed-off-by: Coleman Kane <ckane@colemankane.org>
+Closes #15155
+(cherry picked from commit 36261c8238df462b214854ccea1df4f060cf0995)
+---
+ config/kernel-filemap-splice-read.m4 | 25 +++++++++++++++++++++++++
+ config/kernel-vfs-iov_iter.m4        |  3 +--
+ config/kernel.m4                     |  2 ++
+ module/os/linux/zfs/zpl_file.c       |  4 ++++
+ 4 files changed, 32 insertions(+), 2 deletions(-)
+ create mode 100644 config/kernel-filemap-splice-read.m4
+
+diff --git a/config/kernel-filemap-splice-read.m4 b/config/kernel-filemap-splice-read.m4
+new file mode 100644
+index 0000000000..5199b7373e
+--- /dev/null
++++ b/config/kernel-filemap-splice-read.m4
+@@ -0,0 +1,25 @@
++AC_DEFUN([ZFS_AC_KERNEL_SRC_FILEMAP_SPLICE_READ], [
++	dnl #
++	dnl # Kernel 6.5 - generic_file_splice_read was removed in favor
++	dnl # of filemap_splice_read for the .splice_read member of the
++	dnl # file_operations struct.
++	dnl #
++	ZFS_LINUX_TEST_SRC([has_filemap_splice_read], [
++		#include <linux/fs.h>
++
++		struct file_operations fops __attribute__((unused)) = {
++			.splice_read = filemap_splice_read,
++		};
++	],[])
++])
++
++AC_DEFUN([ZFS_AC_KERNEL_FILEMAP_SPLICE_READ], [
++	AC_MSG_CHECKING([whether filemap_splice_read() exists])
++	ZFS_LINUX_TEST_RESULT([has_filemap_splice_read], [
++		AC_MSG_RESULT(yes)
++		AC_DEFINE(HAVE_FILEMAP_SPLICE_READ, 1,
++		    [filemap_splice_read exists])
++	],[
++		AC_MSG_RESULT(no)
++	])
++])
+diff --git a/config/kernel-vfs-iov_iter.m4 b/config/kernel-vfs-iov_iter.m4
+index cc5a7ab0c2..ff560ff3ee 100644
+--- a/config/kernel-vfs-iov_iter.m4
++++ b/config/kernel-vfs-iov_iter.m4
+@@ -6,8 +6,7 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_VFS_IOV_ITER], [
+ 		#include <linux/fs.h>
+ 		#include <linux/uio.h>
+ 	],[
+-		int type __attribute__ ((unused)) =
+-		    ITER_IOVEC | ITER_KVEC | ITER_BVEC | ITER_PIPE;
++		int type __attribute__ ((unused)) = ITER_KVEC;
+ 	])
+ 
+ 	ZFS_LINUX_TEST_SRC([iov_iter_advance], [
+diff --git a/config/kernel.m4 b/config/kernel.m4
+index 28bd361d33..309f1819be 100644
+--- a/config/kernel.m4
++++ b/config/kernel.m4
+@@ -161,6 +161,7 @@ AC_DEFUN([ZFS_AC_KERNEL_TEST_SRC], [
+ 	ZFS_AC_KERNEL_SRC_WRITEPAGE_T
+ 	ZFS_AC_KERNEL_SRC_RECLAIMED
+ 	ZFS_AC_KERNEL_SRC_REGISTER_SYSCTL_TABLE
++	ZFS_AC_KERNEL_SRC_FILEMAP_SPLICE_READ
+ 	case "$host_cpu" in
+ 		powerpc*)
+ 			ZFS_AC_KERNEL_SRC_CPU_HAS_FEATURE
+@@ -301,6 +302,7 @@ AC_DEFUN([ZFS_AC_KERNEL_TEST_RESULT], [
+ 	ZFS_AC_KERNEL_WRITEPAGE_T
+ 	ZFS_AC_KERNEL_RECLAIMED
+ 	ZFS_AC_KERNEL_REGISTER_SYSCTL_TABLE
++	ZFS_AC_KERNEL_FILEMAP_SPLICE_READ
+ 	case "$host_cpu" in
+ 		powerpc*)
+ 			ZFS_AC_KERNEL_CPU_HAS_FEATURE
+diff --git a/module/os/linux/zfs/zpl_file.c b/module/os/linux/zfs/zpl_file.c
+index f6af2ebd11..24cc1064a8 100644
+--- a/module/os/linux/zfs/zpl_file.c
++++ b/module/os/linux/zfs/zpl_file.c
+@@ -1323,7 +1323,11 @@ const struct file_operations zpl_file_operations = {
+ 	.read_iter	= zpl_iter_read,
+ 	.write_iter	= zpl_iter_write,
+ #ifdef HAVE_VFS_IOV_ITER
++#ifdef HAVE_FILEMAP_SPLICE_READ
++	.splice_read	= filemap_splice_read,
++#else
+ 	.splice_read	= generic_file_splice_read,
++#endif
+ 	.splice_write	= iter_file_splice_write,
+ #endif
+ #else
+-- 
+2.34.1
+

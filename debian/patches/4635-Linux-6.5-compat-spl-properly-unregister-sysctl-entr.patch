@@ -1,0 +1,69 @@
+From: Andrea Righi <andrea.righi@canonical.com>
+Subject: [PATCH] Linux 6.5 compat: spl: properly unregister sysctl entries
+Origin: upstream, https://github.com/openzfs/zfs/pull/15239
+
+When register_sysctl_table() is unavailable we fail to properly
+unregister sysctl entries under "kernel/spl".
+
+This leads to errors like the following when spl is unloaded/reloaded,
+making impossible to properly reload the spl module:
+
+ [  746.995704] sysctl duplicate entry: /kernel/spl/kmem/slab_kvmem_total
+
+Fix by cleaning up all the sub-entries inside "kernel/spl" when the
+spl module is unloaded.
+
+Signed-off-by: Andrea Righi <andrea.righi@canonical.com>
+---
+ module/os/linux/spl/spl-proc.c | 21 ++++++++++++++++++---
+ 1 file changed, 18 insertions(+), 3 deletions(-)
+
+Index: zfs-linux-2.2.0~rc3/module/os/linux/spl/spl-proc.c
+===================================================================
+--- zfs-linux-2.2.0~rc3.orig/module/os/linux/spl/spl-proc.c
++++ zfs-linux-2.2.0~rc3/module/os/linux/spl/spl-proc.c
+@@ -47,6 +47,10 @@ static unsigned long table_min = 0;
+ static unsigned long table_max = ~0;
+ 
+ static struct ctl_table_header *spl_header = NULL;
++#ifndef HAVE_REGISTER_SYSCTL_TABLE
++static struct ctl_table_header *spl_kmem = NULL;
++static struct ctl_table_header *spl_kstat = NULL;
++#endif
+ static struct proc_dir_entry *proc_spl = NULL;
+ static struct proc_dir_entry *proc_spl_kmem = NULL;
+ static struct proc_dir_entry *proc_spl_kmem_slab = NULL;
+@@ -668,6 +672,16 @@ static void spl_proc_cleanup(void)
+ 	remove_proc_entry("taskq", proc_spl);
+ 	remove_proc_entry("spl", NULL);
+ 
++#ifndef HAVE_REGISTER_SYSCTL_TABLE
++	if (spl_kstat) {
++		unregister_sysctl_table(spl_kstat);
++		spl_kstat = NULL;
++	}
++	if (spl_kmem) {
++		unregister_sysctl_table(spl_kmem);
++		spl_kmem = NULL;
++	}
++#endif
+ 	if (spl_header) {
+ 		unregister_sysctl_table(spl_header);
+ 		spl_header = NULL;
+@@ -688,12 +702,13 @@ spl_proc_init(void)
+ 	if (spl_header == NULL)
+ 		return (-EUNATCH);
+ 
+-	if (register_sysctl("kernel/spl/kmem", spl_kmem_table) == NULL) {
++	spl_kmem = register_sysctl("kernel/spl/kmem", spl_kmem_table);
++	if (spl_kmem == NULL) {
+ 		rc = -EUNATCH;
+ 		goto out;
+ 	}
+-
+-	if (register_sysctl("kernel/spl/kstat", spl_kstat_table) == NULL) {
++	spl_kstat = register_sysctl("kernel/spl/kstat", spl_kstat_table);
++	if (spl_kstat == NULL) {
+ 		rc = -EUNATCH;
+ 		goto out;
+ 	}
