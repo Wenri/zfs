@@ -1,0 +1,184 @@
+From 1a21c346ce3adefe1ceea030ca96a67724a0abb5 Mon Sep 17 00:00:00 2001
+From: Rob N <rob.norris@klarasystems.com>
+Date: Wed, 2 Aug 2023 04:31:11 +1000
+Subject: [PATCH 5/8] linux/copy_file_range: properly request a fallback copy
+ on Linux <5.3
+
+Before Linux 5.3, the filesystem's copy_file_range handler had to signal
+back to the kernel that we can't fulfill the request and it should
+fallback to a content copy. This is done by returning -EOPNOTSUPP.
+
+This commit converts the EXDEV return from zfs_clone_range to
+EOPNOTSUPP, to force the kernel to fallback for all the valid reasons it
+might be unable to clone. Without it the copy_file_range() syscall will
+return EXDEV to userspace, breaking its semantics.
+
+Add test for copy_file_range fallbacks.  copy_file_range should always
+fallback to a content copy whenever ZFS can't service the request with
+cloning.
+
+Reviewed-by: Brian Atkinson <batkinson@lanl.gov>
+Reviewed-by: Brian Behlendorf <behlendorf1@llnl.gov>
+Reviewed-by: Kay Pedersen <mail@mkwg.de>
+Signed-off-by: Rob Norris <robn@despairlabs.com>
+Closes #15131
+(cherry picked from commit ead3eea3e07cdcfa6ae02b3e565baddb6a0773db)
+---
+ module/os/linux/zfs/zpl_file_range.c          |  7 ++
+ tests/runfiles/linux.run                      |  1 +
+ tests/test-runner/bin/zts-report.py.in        |  2 +
+ tests/zfs-tests/tests/Makefile.am             |  1 +
+ .../block_cloning_copyfilerange_fallback.ksh  | 86 +++++++++++++++++++
+ 5 files changed, 97 insertions(+)
+ create mode 100755 tests/zfs-tests/tests/functional/block_cloning/block_cloning_copyfilerange_fallback.ksh
+
+diff --git a/module/os/linux/zfs/zpl_file_range.c b/module/os/linux/zfs/zpl_file_range.c
+index 18efebfc1d..72384b638b 100644
+--- a/module/os/linux/zfs/zpl_file_range.c
++++ b/module/os/linux/zfs/zpl_file_range.c
+@@ -106,6 +106,13 @@ zpl_copy_file_range(struct file *src_file, loff_t src_off,
+ 	if (ret == -EOPNOTSUPP || ret == -EXDEV)
+ 		ret = generic_copy_file_range(src_file, src_off, dst_file,
+ 		    dst_off, len, flags);
++#else
++	/*
++	 * Before Linux 5.3 the filesystem has to return -EOPNOTSUPP to signal
++	 * to the kernel that it should fallback to a content copy.
++	 */
++	if (ret == -EXDEV)
++		ret = -EOPNOTSUPP;
+ #endif /* HAVE_VFS_GENERIC_COPY_FILE_RANGE */
+ 
+ 	return (ret);
+diff --git a/tests/runfiles/linux.run b/tests/runfiles/linux.run
+index b68202d849..4747b98373 100644
+--- a/tests/runfiles/linux.run
++++ b/tests/runfiles/linux.run
+@@ -36,6 +36,7 @@ tags = ['functional', 'atime']
+ 
+ [tests/functional/block_cloning:Linux]
+ tests = ['block_cloning_copyfilerange', 'block_cloning_copyfilerange_partial',
++    'block_cloning_copyfilerange_fallback',
+     'block_cloning_ficlone', 'block_cloning_ficlonerange',
+     'block_cloning_ficlonerange_partial',
+     'block_cloning_disabled_copyfilerange', 'block_cloning_disabled_ficlone',
+diff --git a/tests/test-runner/bin/zts-report.py.in b/tests/test-runner/bin/zts-report.py.in
+index c9a2b4179a..5c4b3a7bcd 100755
+--- a/tests/test-runner/bin/zts-report.py.in
++++ b/tests/test-runner/bin/zts-report.py.in
+@@ -300,6 +300,8 @@ elif sys.platform.startswith('linux'):
+             ['SKIP', cfr_reason],
+         'block_cloning/block_cloning_copyfilerange_partial':
+             ['SKIP', cfr_reason],
++        'block_cloning/block_cloning_copyfilerange_fallback':
++            ['SKIP', cfr_reason],
+         'block_cloning/block_cloning_copyfilerange_cross_dataset':
+             ['SKIP', cfr_cross_reason],
+     })
+diff --git a/tests/zfs-tests/tests/Makefile.am b/tests/zfs-tests/tests/Makefile.am
+index 0819cb6b57..3b6b2ef734 100644
+--- a/tests/zfs-tests/tests/Makefile.am
++++ b/tests/zfs-tests/tests/Makefile.am
+@@ -443,6 +443,7 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
+ 	functional/block_cloning/block_cloning_copyfilerange_cross_dataset.ksh \
+ 	functional/block_cloning/block_cloning_copyfilerange.ksh \
+ 	functional/block_cloning/block_cloning_copyfilerange_partial.ksh \
++	functional/block_cloning/block_cloning_copyfilerange_fallback.ksh \
+ 	functional/block_cloning/block_cloning_disabled_copyfilerange.ksh \
+ 	functional/block_cloning/block_cloning_disabled_ficlone.ksh \
+ 	functional/block_cloning/block_cloning_disabled_ficlonerange.ksh \
+diff --git a/tests/zfs-tests/tests/functional/block_cloning/block_cloning_copyfilerange_fallback.ksh b/tests/zfs-tests/tests/functional/block_cloning/block_cloning_copyfilerange_fallback.ksh
+new file mode 100755
+index 0000000000..87f99eb5c0
+--- /dev/null
++++ b/tests/zfs-tests/tests/functional/block_cloning/block_cloning_copyfilerange_fallback.ksh
+@@ -0,0 +1,86 @@
++#!/bin/ksh -p
++#
++# CDDL HEADER START
++#
++# The contents of this file are subject to the terms of the
++# Common Development and Distribution License (the "License").
++# You may not use this file except in compliance with the License.
++#
++# You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
++# or https://opensource.org/licenses/CDDL-1.0.
++# See the License for the specific language governing permissions
++# and limitations under the License.
++#
++# When distributing Covered Code, include this CDDL HEADER in each
++# file and include the License file at usr/src/OPENSOLARIS.LICENSE.
++# If applicable, add the following below this CDDL HEADER, with the
++# fields enclosed by brackets "[]" replaced with your own identifying
++# information: Portions Copyright [yyyy] [name of copyright owner]
++#
++# CDDL HEADER END
++#
++
++#
++# Copyright (c) 2023, Klara Inc.
++# Copyright (c) 2023, Rob Norris <robn@despairlabs.com>
++#
++
++. $STF_SUITE/include/libtest.shlib
++. $STF_SUITE/tests/functional/block_cloning/block_cloning.kshlib
++
++verify_runnable "global"
++
++if [[ $(linux_version) -lt $(linux_version "4.5") ]]; then
++  log_unsupported "copy_file_range not available before Linux 4.5"
++fi
++
++claim="copy_file_range will fall back to copy when cloning not possible."
++
++log_assert $claim
++
++function cleanup
++{
++	datasetexists $TESTPOOL && destroy_pool $TESTPOOL
++}
++
++log_onexit cleanup
++
++log_must zpool create -o feature@block_cloning=enabled $TESTPOOL $DISKS
++
++log_must dd if=/dev/urandom of=/$TESTPOOL/file bs=128K count=4
++log_must sync_pool $TESTPOOL
++
++
++log_note "Copying entire file with copy_file_range"
++
++log_must clonefile -f /$TESTPOOL/file /$TESTPOOL/clone 0 0 524288
++log_must sync_pool $TESTPOOL
++
++log_must have_same_content /$TESTPOOL/file /$TESTPOOL/clone
++
++typeset blocks=$(unique_blocks $TESTPOOL file $TESTPOOL clone)
++log_must [ "$blocks" = "1 2 3 4" ]
++
++
++log_note "Copying within a block with copy_file_range"
++
++log_must clonefile -f /$TESTPOOL/file /$TESTPOOL/clone 32768 32768 65536
++log_must sync_pool $TESTPOOL
++
++log_must have_same_content /$TESTPOOL/file /$TESTPOOL/clone
++
++typeset blocks=$(unique_blocks $TESTPOOL file $TESTPOOL clone)
++log_must [ "$blocks" = "2 3 4" ]
++
++
++log_note "Copying across a block with copy_file_range"
++
++log_must clonefile -f /$TESTPOOL/file /$TESTPOOL/clone 327680 327680 131072
++log_must sync_pool $TESTPOOL
++
++log_must have_same_content /$TESTPOOL/file /$TESTPOOL/clone
++
++typeset blocks=$(unique_blocks $TESTPOOL file $TESTPOOL clone)
++log_must [ "$blocks" = "2" ]
++
++log_pass $claim
+-- 
+2.34.1
+

@@ -1,0 +1,147 @@
+From e2f76fe8624b11f00b2d6b230338278322e591c4 Mon Sep 17 00:00:00 2001
+From: Coleman Kane <ckane@colemankane.org>
+Date: Wed, 2 Aug 2023 17:05:46 -0400
+Subject: [PATCH 6/8] Linux 6.5 compat: register_sysctl_table removed
+
+Additionally, the .child element of ctl_table has been removed in 6.5.
+This change adds a new test for the pre-6.5 register_sysctl_table()
+function, and uses the old code in that case. If it isn't found, then
+the parentage entries in the tables are removed, and the register_sysctl
+call is provided the paths of "kernel/spl", "kernel/spl/kmem", and
+"kernel/spl/kstat" directly, to populate each subdirectory over three
+calls, as is the new API.
+
+Reviewed-by: Brian Atkinson <batkinson@lanl.gov>
+Reviewed-by: Brian Behlendorf <behlendorf1@llnl.gov>
+Signed-off-by: Coleman Kane <ckane@colemankane.org>
+Closes #15138
+(cherry picked from commit e47e9bbe86f2e8fe5da0fc7c3a9014e1f8c132a9)
+---
+ config/kernel-register_sysctl_table.m4 | 27 ++++++++++++++++++++++++++
+ config/kernel.m4                       |  2 ++
+ module/os/linux/spl/spl-proc.c         | 26 ++++++++++++++++++++++---
+ 3 files changed, 52 insertions(+), 3 deletions(-)
+ create mode 100644 config/kernel-register_sysctl_table.m4
+
+diff --git a/config/kernel-register_sysctl_table.m4 b/config/kernel-register_sysctl_table.m4
+new file mode 100644
+index 0000000000..a5e934f56d
+--- /dev/null
++++ b/config/kernel-register_sysctl_table.m4
+@@ -0,0 +1,27 @@
++dnl #
++dnl # Linux 6.5 removes register_sysctl_table
++dnl #
++AC_DEFUN([ZFS_AC_KERNEL_SRC_REGISTER_SYSCTL_TABLE], [
++	ZFS_LINUX_TEST_SRC([has_register_sysctl_table], [
++		#include <linux/sysctl.h>
++
++		static struct ctl_table dummy_table[] = {
++			{}
++		};
++
++    ],[
++		struct ctl_table_header *h
++			__attribute((unused)) = register_sysctl_table(dummy_table);
++    ])
++])
++
++AC_DEFUN([ZFS_AC_KERNEL_REGISTER_SYSCTL_TABLE], [
++	AC_MSG_CHECKING([whether register_sysctl_table exists])
++	ZFS_LINUX_TEST_RESULT([has_register_sysctl_table], [
++		AC_MSG_RESULT([yes])
++		AC_DEFINE(HAVE_REGISTER_SYSCTL_TABLE, 1,
++			[register_sysctl_table exists])
++	],[
++		AC_MSG_RESULT([no])
++	])
++])
+diff --git a/config/kernel.m4 b/config/kernel.m4
+index 1487fa2e77..28bd361d33 100644
+--- a/config/kernel.m4
++++ b/config/kernel.m4
+@@ -160,6 +160,7 @@ AC_DEFUN([ZFS_AC_KERNEL_TEST_SRC], [
+ 	ZFS_AC_KERNEL_SRC_FILEMAP
+ 	ZFS_AC_KERNEL_SRC_WRITEPAGE_T
+ 	ZFS_AC_KERNEL_SRC_RECLAIMED
++	ZFS_AC_KERNEL_SRC_REGISTER_SYSCTL_TABLE
+ 	case "$host_cpu" in
+ 		powerpc*)
+ 			ZFS_AC_KERNEL_SRC_CPU_HAS_FEATURE
+@@ -299,6 +300,7 @@ AC_DEFUN([ZFS_AC_KERNEL_TEST_RESULT], [
+ 	ZFS_AC_KERNEL_FILEMAP
+ 	ZFS_AC_KERNEL_WRITEPAGE_T
+ 	ZFS_AC_KERNEL_RECLAIMED
++	ZFS_AC_KERNEL_REGISTER_SYSCTL_TABLE
+ 	case "$host_cpu" in
+ 		powerpc*)
+ 			ZFS_AC_KERNEL_CPU_HAS_FEATURE
+diff --git a/module/os/linux/spl/spl-proc.c b/module/os/linux/spl/spl-proc.c
+index 01f5619e18..bcc356ae55 100644
+--- a/module/os/linux/spl/spl-proc.c
++++ b/module/os/linux/spl/spl-proc.c
+@@ -624,6 +624,7 @@ static struct ctl_table spl_table[] = {
+ 		.mode		= 0644,
+ 		.proc_handler	= &proc_dohostid,
+ 	},
++#ifdef HAVE_REGISTER_SYSCTL_TABLE
+ 	{
+ 		.procname	= "kmem",
+ 		.mode		= 0555,
+@@ -634,9 +635,11 @@ static struct ctl_table spl_table[] = {
+ 		.mode		= 0555,
+ 		.child		= spl_kstat_table,
+ 	},
++#endif
+ 	{},
+ };
+ 
++#ifdef HAVE_REGISTER_SYSCTL_TABLE
+ static struct ctl_table spl_dir[] = {
+ 	{
+ 		.procname	= "spl",
+@@ -648,21 +651,38 @@ static struct ctl_table spl_dir[] = {
+ 
+ static struct ctl_table spl_root[] = {
+ 	{
+-	.procname = "kernel",
+-	.mode = 0555,
+-	.child = spl_dir,
++		.procname	= "kernel",
++		.mode		= 0555,
++		.child		= spl_dir,
+ 	},
+ 	{}
+ };
++#endif
+ 
+ int
+ spl_proc_init(void)
+ {
+ 	int rc = 0;
+ 
++#ifdef HAVE_REGISTER_SYSCTL_TABLE
+ 	spl_header = register_sysctl_table(spl_root);
+ 	if (spl_header == NULL)
+ 		return (-EUNATCH);
++#else
++	spl_header = register_sysctl("kernel/spl", spl_table);
++	if (spl_header == NULL)
++		return (-EUNATCH);
++
++	if (register_sysctl("kernel/spl/kmem", spl_kmem_table) == NULL) {
++		rc = -EUNATCH;
++		goto out;
++	}
++
++	if (register_sysctl("kernel/spl/kstat", spl_kstat_table) == NULL) {
++		rc = -EUNATCH;
++		goto out;
++	}
++#endif
+ 
+ 	proc_spl = proc_mkdir("spl", NULL);
+ 	if (proc_spl == NULL) {
+-- 
+2.34.1
+

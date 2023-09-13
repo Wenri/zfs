@@ -1,0 +1,59 @@
+From 9f05e37fa64fb1ee930f8dce5365863159ed5cc9 Mon Sep 17 00:00:00 2001
+From: Coleman Kane <ckane@colemankane.org>
+Date: Sun, 30 Jul 2023 15:23:47 -0400
+Subject: [PATCH 4/8] Linux 4.20 compat: wrapper function for iov_iter type
+ access
+
+An iov_iter_type() function to access the "type" member of the struct
+iov_iter was added at one point. Move the conditional logic to decide
+which method to use for accessing it into a macro and simplify the
+zpl_uio_init code.
+
+Reviewed-by: Brian Behlendorf <behlendorf1@llnl.gov>
+Reviewed-by: Brian Atkinson <batkinson@lanl.gov>
+Signed-off-by: Coleman Kane <ckane@colemankane.org>
+Closes #15100
+(cherry picked from commit 6751634d77520793ec410b6886febb7e665fc175)
+---
+ include/os/linux/spl/sys/uio.h | 6 ++++++
+ module/os/linux/zfs/zpl_file.c | 7 ++-----
+ 2 files changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/include/os/linux/spl/sys/uio.h b/include/os/linux/spl/sys/uio.h
+index 082e930e46..cce097e16f 100644
+--- a/include/os/linux/spl/sys/uio.h
++++ b/include/os/linux/spl/sys/uio.h
+@@ -179,4 +179,10 @@ zfs_uio_iov_iter_init(zfs_uio_t *uio, struct iov_iter *iter, offset_t offset,
+ #define	zfs_uio_iter_iov(iter)	(iter)->iov
+ #endif
+ 
++#if defined(HAVE_IOV_ITER_TYPE)
++#define	zfs_uio_iov_iter_type(iter)	iov_iter_type((iter))
++#else
++#define	zfs_uio_iov_iter_type(iter)	(iter)->type
++#endif
++
+ #endif /* SPL_UIO_H */
+diff --git a/module/os/linux/zfs/zpl_file.c b/module/os/linux/zfs/zpl_file.c
+index aedafd6002..f6af2ebd11 100644
+--- a/module/os/linux/zfs/zpl_file.c
++++ b/module/os/linux/zfs/zpl_file.c
+@@ -300,13 +300,10 @@ zpl_uio_init(zfs_uio_t *uio, struct kiocb *kiocb, struct iov_iter *to,
+ {
+ #if defined(HAVE_VFS_IOV_ITER)
+ 	zfs_uio_iov_iter_init(uio, to, pos, count, skip);
+-#elif defined(HAVE_IOV_ITER_TYPE)
+-	zfs_uio_iovec_init(uio, zfs_uio_iter_iov(to), to->nr_segs, pos,
+-	    iov_iter_type(to) & ITER_KVEC ? UIO_SYSSPACE : UIO_USERSPACE,
+-	    count, skip);
+ #else
+ 	zfs_uio_iovec_init(uio, zfs_uio_iter_iov(to), to->nr_segs, pos,
+-	    to->type & ITER_KVEC ? UIO_SYSSPACE : UIO_USERSPACE,
++	    zfs_uio_iov_iter_type(to) & ITER_KVEC ?
++	    UIO_SYSSPACE : UIO_USERSPACE,
+ 	    count, skip);
+ #endif
+ }
+-- 
+2.34.1
+

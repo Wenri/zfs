@@ -1,4 +1,4 @@
-bashcompletiondir = $(sysconfdir)/bash_completion.d
+bashcompletiondir = /usr/share/bash-completion/completions/
 
 nodist_bashcompletion_DATA  = %D%/zfs
 SUBSTFILES                 += $(nodist_bashcompletion_DATA)

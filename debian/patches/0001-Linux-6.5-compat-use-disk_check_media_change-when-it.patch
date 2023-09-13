@@ -1,0 +1,37 @@
+From 11f270f85c005c54c983e2b237551be78875df49 Mon Sep 17 00:00:00 2001
+From: Coleman Kane <ckane@colemankane.org>
+Date: Tue, 1 Aug 2023 11:32:38 -0400
+Subject: [PATCH 1/8] Linux 6.5 compat: use disk_check_media_change when it
+ exists
+
+When disk_check_media_change() exists, then define
+zfs_check_media_change() to simply call disk_check_media_change() on
+the bd_disk member of its argument. Since disk_check_media_change()
+is newer than when revalidate_disk was present in bops, we should
+be able to safely do this via a macro, instead of recreating a new
+implementation of the inline function that forces revalidation.
+
+Reviewed-by: Brian Behlendorf <behlendorf1@llnl.gov>
+Reviewed-by: Brian Atkinson <batkinson@lanl.gov>
+Signed-off-by: Coleman Kane <ckane@colemankane.org>
+Closes #15101
+(cherry picked from commit 3b8e318b7737fa40daf6abbc06ba31cd6ae8d572)
+---
+ include/os/linux/kernel/linux/blkdev_compat.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/include/os/linux/kernel/linux/blkdev_compat.h b/include/os/linux/kernel/linux/blkdev_compat.h
+index e0f20ba320..1641dd92a9 100644
+--- a/include/os/linux/kernel/linux/blkdev_compat.h
++++ b/include/os/linux/kernel/linux/blkdev_compat.h
+@@ -347,6 +347,7 @@ zfs_check_media_change(struct block_device *bdev)
+ #define	vdev_bdev_reread_part(bdev)	zfs_check_media_change(bdev)
+ #elif defined(HAVE_DISK_CHECK_MEDIA_CHANGE)
+ #define	vdev_bdev_reread_part(bdev)	disk_check_media_change(bdev->bd_disk)
++#define	zfs_check_media_change(bdev)	disk_check_media_change(bdev->bd_disk)
+ #else
+ /*
+  * This is encountered if check_disk_change() and bdev_check_media_change()
+-- 
+2.34.1
+

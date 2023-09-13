@@ -1,0 +1,104 @@
+From a9131c0259f6db6e7bc1178751e9463f4e96c877 Mon Sep 17 00:00:00 2001
+From: Coleman Kane <ckane@colemankane.org>
+Date: Sun, 23 Jul 2023 01:34:29 -0400
+Subject: [PATCH 3/8] Linux 6.4 compat: iter_iov() function now used to get old
+ iov member
+
+The iov_iter->iov member is now iov_iter->__iov and must be accessed via
+the accessor function iter_iov(). Create a wrapper that is conditionally
+compiled to use the access method appropriate for the target kernel
+version.
+
+Reviewed-by: Brian Behlendorf <behlendorf1@llnl.gov>
+Reviewed-by: Brian Atkinson <batkinson@lanl.gov>
+Signed-off-by: Coleman Kane <ckane@colemankane.org>
+Closes #15100
+(cherry picked from commit 325505e5c4e48f32e1a03e42a694509bf4c02670)
+---
+ config/kernel-vfs-iov_iter.m4  | 23 +++++++++++++++++++++++
+ include/os/linux/spl/sys/uio.h |  6 ++++++
+ module/os/linux/zfs/zpl_file.c |  8 +++-----
+ 3 files changed, 32 insertions(+), 5 deletions(-)
+
+diff --git a/config/kernel-vfs-iov_iter.m4 b/config/kernel-vfs-iov_iter.m4
+index e0617faab0..cc5a7ab0c2 100644
+--- a/config/kernel-vfs-iov_iter.m4
++++ b/config/kernel-vfs-iov_iter.m4
+@@ -93,6 +93,14 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_VFS_IOV_ITER], [
+ 		struct iov_iter iter = { 0 };
+ 		__attribute__((unused)) enum iter_type i = iov_iter_type(&iter);
+ 	])
++
++	ZFS_LINUX_TEST_SRC([iter_iov], [
++		#include <linux/fs.h>
++		#include <linux/uio.h>
++	],[
++		struct iov_iter iter = { 0 };
++		__attribute__((unused)) const struct iovec *iov = iter_iov(&iter);
++	])
+ ])
+ 
+ AC_DEFUN([ZFS_AC_KERNEL_VFS_IOV_ITER], [
+@@ -201,4 +209,19 @@ AC_DEFUN([ZFS_AC_KERNEL_VFS_IOV_ITER], [
+ 		AC_DEFINE(HAVE_VFS_IOV_ITER, 1,
+ 		    [All required iov_iter interfaces are available])
+ 	])
++
++	dnl #
++	dnl # Kernel 6.5 introduces the iter_iov() function that returns the
++	dnl # __iov member of an iov_iter*. The iov member was renamed to this
++	dnl # __iov member, and is intended to be accessed via the helper
++	dnl # function now.
++	dnl #
++	AC_MSG_CHECKING([whether iter_iov() is available])
++	ZFS_LINUX_TEST_RESULT([iter_iov], [
++		AC_MSG_RESULT(yes)
++		AC_DEFINE(HAVE_ITER_IOV, 1,
++		    [iter_iov() is available])
++	],[
++		AC_MSG_RESULT(no)
++	])
+ ])
+diff --git a/include/os/linux/spl/sys/uio.h b/include/os/linux/spl/sys/uio.h
+index fe2b5c07a0..082e930e46 100644
+--- a/include/os/linux/spl/sys/uio.h
++++ b/include/os/linux/spl/sys/uio.h
+@@ -173,4 +173,10 @@ zfs_uio_iov_iter_init(zfs_uio_t *uio, struct iov_iter *iter, offset_t offset,
+ }
+ #endif
+ 
++#if defined(HAVE_ITER_IOV)
++#define	zfs_uio_iter_iov(iter)	iter_iov((iter))
++#else
++#define	zfs_uio_iter_iov(iter)	(iter)->iov
++#endif
++
+ #endif /* SPL_UIO_H */
+diff --git a/module/os/linux/zfs/zpl_file.c b/module/os/linux/zfs/zpl_file.c
+index 73526db731..aedafd6002 100644
+--- a/module/os/linux/zfs/zpl_file.c
++++ b/module/os/linux/zfs/zpl_file.c
+@@ -300,17 +300,15 @@ zpl_uio_init(zfs_uio_t *uio, struct kiocb *kiocb, struct iov_iter *to,
+ {
+ #if defined(HAVE_VFS_IOV_ITER)
+ 	zfs_uio_iov_iter_init(uio, to, pos, count, skip);
+-#else
+-#ifdef HAVE_IOV_ITER_TYPE
+-	zfs_uio_iovec_init(uio, to->iov, to->nr_segs, pos,
++#elif defined(HAVE_IOV_ITER_TYPE)
++	zfs_uio_iovec_init(uio, zfs_uio_iter_iov(to), to->nr_segs, pos,
+ 	    iov_iter_type(to) & ITER_KVEC ? UIO_SYSSPACE : UIO_USERSPACE,
+ 	    count, skip);
+ #else
+-	zfs_uio_iovec_init(uio, to->iov, to->nr_segs, pos,
++	zfs_uio_iovec_init(uio, zfs_uio_iter_iov(to), to->nr_segs, pos,
+ 	    to->type & ITER_KVEC ? UIO_SYSSPACE : UIO_USERSPACE,
+ 	    count, skip);
+ #endif
+-#endif
+ }
+ 
+ static ssize_t
+-- 
+2.34.1
+
