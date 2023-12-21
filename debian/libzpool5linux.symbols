@@ -200,7 +200,6 @@ libzpool.so.5 libzpool5linux #MINVER#
  arc_lotsfree_percent@Base 0.8.2
  arc_memory_throttle@Base 2.0
  arc_no_grow_shift@Base 0.8.2
- arc_prune_async@Base 2.0
  arc_prune_list@Base 2.0
  arc_prune_mtx@Base 2.0
  arc_prune_taskq@Base 2.0
