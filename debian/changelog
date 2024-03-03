@@ -1,4 +1,50 @@
-zfs-linux (2.2.0-0ubuntu1~23.10) mantic; urgency=medium
+zfs-linux (2.2.2-0ubuntu4) noble; urgency=medium
+
+  * Cherrypick v6.8-rc1 patches from upstream.
+
+ -- Paolo Pisati <paolo.pisati@canonical.com>  Fri, 26 Jan 2024 10:41:36 +0000
+
+zfs-linux (2.2.2-0ubuntu3) noble; urgency=medium
+
+  * Cherrypick 2.2.3-staging patches for v6.7 compat.
+
+ -- Dimitri John Ledkov <dimitri.ledkov@canonical.com>  Fri, 05 Jan 2024 00:19:06 +0000
+
+zfs-linux (2.2.2-0ubuntu2) noble; urgency=medium
+
+  * d/p/u/zed-fix-typo-ZED_POWER_OFF_ENCLOUSRE_SLOT_ON_FAULT.patch:
+    fix typo in configuration option in zed.rc (LP: #2046082)
+
+ -- Mauricio Faria de Oliveira <mfo@canonical.com>  Sat, 09 Dec 2023 16:10:21 -0300
+
+zfs-linux (2.2.2-0ubuntu1) noble; urgency=medium
+
+  * New upstream release.
+
+ -- Dimitri John Ledkov <dimitri.ledkov@canonical.com>  Tue, 05 Dec 2023 13:20:08 +0000
+
+zfs-linux (2.2.1-0ubuntu1) noble; urgency=medium
+
+  * New upstream release.
+
+ -- Dimitri John Ledkov <dimitri.ledkov@canonical.com>  Tue, 28 Nov 2023 00:10:52 +0000
+
+zfs-linux (2.2.0-0ubuntu3) noble; urgency=medium
+
+  * No change rebuild.
+
+ -- Paolo Pisati <paolo.pisati@canonical.com>  Fri, 17 Nov 2023 09:14:23 +0000
+
+zfs-linux (2.2.0-0ubuntu2) noble; urgency=medium
+
+  * debian/patches/ubuntu/4752-Linux-6.6-compat-use-inode_get-set_ctime.patch,
+    debian/patches/ubuntu/4753-Linux-6.6-compat-generic_fillattr-has-a-new-u32-requ.patch,
+    debian/patches/ubuntu/4754-Linux-6.6-compat-fsync_bdev-has-been-removed-in-favo.patch:
+    - Linux 6.6 support(LP: #2042565)
+
+ -- Paolo Pisati <paolo.pisati@canonical.com>  Thu, 02 Nov 2023 13:17:53 +0000
+
+zfs-linux (2.2.0-0ubuntu1) noble; urgency=medium
 
   * New upstream release. LP: #2040181
     - drop patches applied upstream

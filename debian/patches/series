@@ -1,3 +1,10 @@
+0001-linux-6.7-compat-simplify-current_time-check.patch
+0002-linux-6.7-compat-use-inode-atime-mtime-accessors.patch
+0003-linux-6.7-compat-handle-superblock-shrinker-member-c.patch
+0004-linux-6.7-compat-rework-shrinker-setup-for-heap-allo.patch
+0005-ZTS-Disable-io_uring-test-on-CentOS-9.patch
+0006-Linux-6.5-compat-check-BLK_OPEN_EXCL-is-defined.patch
+0007-spa-make-read-write-queues-configurable.patch
 #unapplied/init-debian-openrc-workaround.patch # OpenRC users can apply this locally
 0001-Revert-Revert-systemd-Use-non-absolute-paths-in-Exec.patch
 1000-dont-symlink-zed-scripts.patch
@@ -25,5 +32,11 @@ ubuntu/4100-disable-bpool-upgrade.patch
 ubuntu/zfs-mount-container-start.patch
 ubuntu/4510-silently-ignore-modprobe-failure.patch
 ubuntu/4751-suppress-types.patch
+ubuntu/zed-fix-typo-ZED_POWER_OFF_ENCLOUSRE_SLOT_ON_FAULT.patch
 fixup-abi.patch
-4630-ubsan-Support-varlen-arrays-at-end-of-struct-as-1-or.patch
+0001-Linux-6.8-compat-make-test-functions-static.patch
+0002-Linux-6.8-compat-update-for-new-bdev-access-function.patch
+0003-Linux-6.8-compat-implement-strlcpy-fallback.patch
+0004-Linux-6.8-compat-replace-MAX_ORDER-define.patch
+0005-Linux-6.8-compat-fix-inode-permission-tests.patch
+0006-Linux-6.8-compat-handle-mnt_idmap-user_namespace-cha.patch
