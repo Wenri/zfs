@@ -40,6 +40,9 @@ typedef struct kernel_param zfs_kernel_param_t;
 #define	ZMOD_RW 0644
 #define	ZMOD_RD 0444
 
+#ifdef LONG
+#undef LONG
+#endif
 /* BEGIN CSTYLED */
 #define	INT int
 #define	UINT uint

@@ -44,7 +44,7 @@
 
 #ifndef _SPL_DEBUG_H
 #define	_SPL_DEBUG_H
-
+#include <asm/asm.h>
 /*
  * Common DEBUG functionality.
  */
@@ -59,6 +59,7 @@ int spl_panic(const char *file, const char *func, int line,
 void spl_dumpstack(void);
 
 /* BEGIN CSTYLED */
+#undef PANIC
 #define	PANIC(fmt, a...)						\
 	spl_panic(__FILE__, __FUNCTION__, __LINE__, fmt, ## a)
 

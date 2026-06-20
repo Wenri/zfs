@@ -133,9 +133,10 @@ extern void spl_cleanup(void);
 #ifndef MAX
 #define	MAX(a, b)		((a) < (b) ? (b) : (a))
 #endif
-#ifndef ABS
-#define	ABS(a)			((a) < 0 ? -(a) : (a))
+#ifdef ABS
+#undef ABS
 #endif
+#define	ABS(a)			((a) < 0 ? -(a) : (a))
 #ifndef DIV_ROUND_UP
 #define	DIV_ROUND_UP(n, d)	(((n) + (d) - 1) / (d))
 #endif
