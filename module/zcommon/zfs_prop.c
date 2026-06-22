@@ -791,6 +791,9 @@ zfs_prop_init(void)
 	zprop_register_index(ZFS_PROP_MIMIC, "com.apple.mimic", 0,
 	    PROP_INHERIT, ZFS_TYPE_FILESYSTEM, "off | ntfs",
 	    "COM.APPLE.MIMIC_HFS", mimic_table, sfeatures);
+	zprop_register_number(ZFS_PROP_VOLSECTORSIZE, "volsectorsize",
+	    512, PROP_ONETIME, ZFS_TYPE_VOLUME, "512 or 4096", "VOLSECT",
+	    B_FALSE, sfeatures);
 
 	/*
 	 * Properties that are obsolete and not used.  These are retained so
