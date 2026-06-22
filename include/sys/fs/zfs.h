@@ -206,6 +206,7 @@ typedef enum {
 	ZFS_PROP_MIMIC,			/* Windows: mimic=ntfs */
 	ZFS_PROP_DRIVELETTER,
 	ZFS_PROP_SNAPSHOTS_CHANGED_NSECS,
+	ZFS_PROP_VOLSECTORSIZE,
 	ZFS_NUM_PROPS
 } zfs_prop_t;
 
