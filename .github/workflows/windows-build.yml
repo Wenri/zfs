@@ -163,6 +163,12 @@ jobs:
           "installer=$($f.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Installer: $($f.FullName)"
 
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: openzfs-windows-2.4.1-installer
+          path: ${{ steps.innoout.outputs.installer }}
+
       - name: Trust generated test certificate for install
         shell: pwsh
         run: |
