@@ -81,14 +81,30 @@ ZFS_MODULE_RAW(, zfs_version, zfs_version, STRING, ZMOD_RD,
 
 #if defined(__clang__)
 /*
- *  Try to figure out why we fail linking with these two missing
- * Appears to come from including intrin.h - except we don't.
+ * clang-cl declares the MSVC __readcr8() intrinsic but provides no
+ * definition, so the WDK's inlined KeGetCurrentIrql() ends up calling
+ * this function.  It used to return a constant 0, which made every
+ * IRQL check in the driver (spl-mutex.c, zfs_vnops_windows.c, zvol
+ * code, ...) pass vacuously.  On amd64 the IRQL *is* CR8, so read the
+ * real register.  CR8 does not exist on ARM64; keep the old stub there
+ * only to satisfy any stray reference, KeGetCurrentIrql() does not use
+ * it on that architecture.
  */
+#if defined(__x86_64__)
+uint64_t
+__readcr8(void)
+{
+	uint64_t cr8;
+	__asm__ __volatile__("movq %%cr8, %0" : "=r" (cr8));
+	return (cr8);
+}
+#else
 uint64_t
 __readcr8(void)
 {
 	return (0ULL);
 }
+#endif
 
 unsigned long
 _byteswap_ulong(unsigned long b)
