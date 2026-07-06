@@ -116,6 +116,307 @@ static __attribute__((noreturn)) void txg_quiesce_thread(void *arg);
 uint_t zfs_txg_timeout = 5;	/* max seconds worth of delta per txg */
 
 /*
+ * Adaptive Dirty Ceiling (ADC): a fixed-point PID controller that
+ * adjusts zfs_dirty_data_max once per txg so that the spa_sync()
+ * duration tracks a target fraction of zfs_txg_timeout, instead of
+ * letting a fixed dirty ceiling drive sync times through the roof
+ * under sustained write load.  Ported from DataCoreSoftware/openzfs
+ * (SSV-21953/SSV-25461).  Disabled by default; set zfs_adc_enable=1
+ * to activate.  Setting it back to 0 restores the boot-time
+ * zfs_dirty_data_max and reverts to stock behavior.
+ *
+ * With multiple imported pools each sync thread runs its own
+ * controller instance against the single global zfs_dirty_data_max,
+ * so the slowest pool ends up governing the ceiling.  The controller
+ * is primarily intended for single-pool systems.
+ */
+int zfs_adc_enable = 0;
+
+/*
+ * Target spa_sync() duration as a percentage of zfs_txg_timeout.
+ * Lower values leave more burst headroom at the cost of peak
+ * throughput.
+ */
+uint_t zfs_adc_target_sync_pct = 75;
+
+/* PID gains, scaled x1000 to avoid floating point */
+int zfs_adc_kp = 200;	/* proportional: main corrective force */
+int zfs_adc_ki = 15;	/* integral: eliminates steady-state bias */
+int zfs_adc_kd = 100;	/* derivative: damping against oscillation */
+
+/* EMA weight of the newest spa_sync duration sample, in percent */
+uint_t zfs_adc_ema_alpha_pct = 25;
+
+/* Minimum txgs between dirty_max updates (anti-flapping) */
+uint_t zfs_adc_holdoff_txgs = 2;
+
+/*
+ * Lower bound for zfs_dirty_data_max; txgs that flushed less than
+ * this carry no useful load signal and are ignored.
+ */
+#define	ADC_DIRTY_FLOOR_BYTES	(153ULL << 20)
+
+typedef struct dynamic_dirty_data_stats {
+	kstat_named_t adc_target;
+	kstat_named_t spa_sync_time;
+	kstat_named_t data_flushed_per_sync;
+	kstat_named_t total_dirty_data;
+} dynamic_dirty_data_stats_t;
+
+static dynamic_dirty_data_stats_t dynamic_dirty_data_stats = {
+	{ "adc_target",			KSTAT_DATA_INT64 },
+	{ "spa_sync_time",		KSTAT_DATA_INT64 },
+	{ "data_flushed_per_sync",	KSTAT_DATA_UINT64 },
+	{ "total_dirty_data",		KSTAT_DATA_UINT64 },
+};
+
+static kstat_t *adc_ksp;
+static uint32_t adc_active;	/* sync threads with an active controller */
+static uint64_t adc_dirty_ceil;	/* boot-time zfs_dirty_data_max */
+static int64_t kstat_adc_target;
+static int64_t kstat_spa_sync_time;
+static uint64_t kstat_data_flushed_per_sync;
+static uint64_t kstat_total_dirty_data;
+
+/*
+ * Controller state, one instance on the stack of each pool's
+ * txg_sync_thread: no heap allocation and no locking needed.
+ */
+typedef struct txg_adc {
+	/* PID state */
+	int64_t adc_integral;	/* accumulated error (I term) */
+	int64_t adc_prev_error;	/* last error sample (D term) */
+	clock_t adc_ema_delta;	/* smoothed spa_sync duration */
+	uint64_t adc_last_txg;	/* txg of last adjustment */
+
+	/* bounds in bytes, computed once at init */
+	uint64_t adc_min_dirty;
+	uint64_t adc_max_dirty;
+
+	/* diagnostics */
+	uint64_t adc_n_syncs;	/* total txgs observed */
+	uint64_t adc_n_raised;	/* times dirty_max was raised */
+	uint64_t adc_n_lowered;	/* times dirty_max was lowered */
+	uint64_t adc_n_clamped;	/* times a bound was hit */
+	int64_t adc_last_p;	/* last P term */
+	int64_t adc_last_i;	/* last I term */
+	int64_t adc_last_d;	/* last D term */
+} txg_adc_t;
+
+static int
+dynamic_dirty_data_kstat_update(kstat_t *ksp, int rw)
+{
+	dynamic_dirty_data_stats_t *as = ksp->ks_data;
+
+	if (rw == KSTAT_WRITE)
+		return (SET_ERROR(EACCES));
+	as->adc_target.value.i64 = kstat_adc_target;
+	as->spa_sync_time.value.i64 = kstat_spa_sync_time;
+	as->data_flushed_per_sync.value.ui64 = kstat_data_flushed_per_sync;
+	as->total_dirty_data.value.ui64 = kstat_total_dirty_data;
+
+	return (0);
+}
+
+/*
+ * Exponential moving average in integer arithmetic:
+ * new = prev + (sample - prev) * alpha_pct / 100.  alpha_pct=25 gives
+ * a smoothing time constant of ~3 txgs -- fast enough to track load
+ * changes, slow enough to ignore one-off scrub/snapshot bursts.
+ */
+static inline clock_t
+adc_ema(clock_t prev, clock_t sample, uint_t alpha_pct)
+{
+	return (prev + (clock_t)(((int64_t)sample - (int64_t)prev) *
+	    alpha_pct / 100));
+}
+
+/*
+ * Called before a sync thread's first adc_update().  Seeds the EMA at
+ * the target so the first txg doesn't trigger an aggressive
+ * correction from a cold zero baseline.
+ */
+static void
+adc_init(txg_adc_t *adc, clock_t target_ticks)
+{
+	memset(adc, 0, sizeof (*adc));
+
+	/*
+	 * The ceiling is the boot-time zfs_dirty_data_max, captured
+	 * before any controller instance has adjusted it.
+	 */
+	if (adc_dirty_ceil == 0)
+		adc_dirty_ceil = zfs_dirty_data_max;
+
+	adc->adc_min_dirty = ADC_DIRTY_FLOOR_BYTES;
+	adc->adc_max_dirty = adc_dirty_ceil;
+
+	/* defensive: ensure min < max regardless of misconfiguration */
+	if (adc->adc_min_dirty >= adc->adc_max_dirty)
+		adc->adc_min_dirty = adc->adc_max_dirty / 8;
+
+	/* seed EMA at target -- controller starts in steady state */
+	adc->adc_ema_delta = target_ticks;
+
+	if (atomic_inc_32_nv(&adc_active) == 1) {
+		adc_ksp = kstat_create("zfs", 0, "dynamic_dirty_data_stats",
+		    "misc", KSTAT_TYPE_NAMED,
+		    sizeof (dynamic_dirty_data_stats) /
+		    sizeof (kstat_named_t), KSTAT_FLAG_VIRTUAL);
+		if (adc_ksp != NULL) {
+			adc_ksp->ks_data = &dynamic_dirty_data_stats;
+			adc_ksp->ks_update = dynamic_dirty_data_kstat_update;
+			kstat_install(adc_ksp);
+		}
+	}
+}
+
+static void
+adc_fini(void)
+{
+	kstat_t *ksp;
+
+	if (atomic_dec_32_nv(&adc_active) != 0)
+		return;
+
+	ksp = adc_ksp;
+	adc_ksp = NULL;
+	if (ksp != NULL)
+		kstat_delete(ksp);
+
+	/*
+	 * Zero the shadow globals so a kstat read before the next
+	 * adc_init() returns 0 rather than stale values.
+	 */
+	kstat_adc_target = 0;
+	kstat_spa_sync_time = 0;
+	kstat_data_flushed_per_sync = 0;
+	kstat_total_dirty_data = 0;
+}
+
+/*
+ * Core PID + dirty_max adjustment, called once per txg with the
+ * just-measured spa_sync() duration.  O(1), no allocation, no locks;
+ * modifies the global zfs_dirty_data_max in place, which txg_delay()
+ * and the write throttle pick up immediately.
+ */
+static void
+adc_update(txg_adc_t *adc, uint64_t txg, clock_t raw_delta,
+    clock_t target_ticks, uint64_t data_flushed, uint64_t total_dirty)
+{
+	int64_t error;		/* normalized error x1000 */
+	int64_t p_term, i_term, d_term, pid_out;
+	int64_t adjustment;	/* byte delta for dirty_max */
+	int64_t max_step, windup_limit, proposed;
+	uint64_t cur, next;
+
+	kstat_adc_target = (int64_t)target_ticks * 1000 / hz;
+	kstat_spa_sync_time = (int64_t)raw_delta * 1000 / hz;
+	kstat_data_flushed_per_sync = data_flushed;
+	kstat_total_dirty_data = total_dirty;
+
+	/* mostly-idle txgs carry no useful load signal */
+	if (data_flushed < ADC_DIRTY_FLOOR_BYTES)
+		return;
+
+	adc->adc_n_syncs++;
+
+	/* update the smoothed sync duration */
+	adc->adc_ema_delta = adc_ema(adc->adc_ema_delta, raw_delta,
+	    zfs_adc_ema_alpha_pct);
+
+	/* enforce the adjustment holdoff (anti-flapping) */
+	if (adc->adc_last_txg != 0 &&
+	    (txg - adc->adc_last_txg) < zfs_adc_holdoff_txgs)
+		return;
+
+	/* safety: avoid divide-by-zero on misconfiguration */
+	if (target_ticks == 0)
+		return;
+
+	/*
+	 * Normalized error: (ema - target) / target x1000.
+	 * > 0: sync taking too long, dirty_max must shrink;
+	 * < 0: sync finishing early, dirty_max can grow.
+	 */
+	error = ((int64_t)adc->adc_ema_delta - (int64_t)target_ticks) *
+	    1000 / (int64_t)target_ticks;
+
+	/* P term: immediate response to the current error */
+	p_term = (int64_t)zfs_adc_kp * error / 1000;
+
+	/*
+	 * I term with anti-windup clamp at +-(30 x Kp): prevents the
+	 * integral from growing unboundedly during sustained overload
+	 * (degraded pool, resilver, ...), limiting the I contribution
+	 * to at most 3x the maximum P term.
+	 */
+	adc->adc_integral += error;
+	windup_limit = 30 * (int64_t)zfs_adc_kp;
+	if (adc->adc_integral > windup_limit)
+		adc->adc_integral = windup_limit;
+	if (adc->adc_integral < -windup_limit)
+		adc->adc_integral = -windup_limit;
+	i_term = (int64_t)zfs_adc_ki * adc->adc_integral / 1000;
+
+	/* D term: dampen oscillation via the rate of change */
+	d_term = (int64_t)zfs_adc_kd * (error - adc->adc_prev_error) / 1000;
+	adc->adc_prev_error = error;
+
+	adc->adc_last_p = p_term;
+	adc->adc_last_i = i_term;
+	adc->adc_last_d = d_term;
+
+	pid_out = p_term + i_term + d_term;
+	if (pid_out == 0)
+		return;
+
+	/*
+	 * Convert the PID output to a byte adjustment (sign inverted:
+	 * a slow sync means dirty_max must decrease), capped at +-20%
+	 * of the current value per step so one anomalous txg cannot
+	 * collapse the ceiling.
+	 */
+	cur = zfs_dirty_data_max;
+	adjustment = -((int64_t)cur / 1000) * pid_out;
+	max_step = (int64_t)(cur / 5);
+	if (adjustment > max_step)
+		adjustment = max_step;
+	if (adjustment < -max_step)
+		adjustment = -max_step;
+
+	proposed = (int64_t)cur + adjustment;
+	if (proposed <= (int64_t)adc->adc_min_dirty) {
+		next = adc->adc_min_dirty;
+		adc->adc_n_clamped++;
+	} else if (proposed >= (int64_t)adc->adc_max_dirty) {
+		next = adc->adc_max_dirty;
+		adc->adc_n_clamped++;
+	} else {
+		next = proposed;
+	}
+
+	/* commit: a single store, visible to txg_delay() immediately */
+	if (next != cur) {
+		zfs_dirty_data_max = next;
+		adc->adc_last_txg = txg;
+		if (next > cur)
+			adc->adc_n_raised++;
+		else
+			adc->adc_n_lowered++;
+
+		zfs_dbgmsg("txg_adc txg=%llu ema_delta=%ldms target=%ldms "
+		    "err=%lld P=%lld I=%lld D=%lld dirty_max %lluMB->%lluMB",
+		    (u_longlong_t)txg,
+		    (long)((int64_t)adc->adc_ema_delta * 1000 / hz),
+		    (long)((int64_t)target_ticks * 1000 / hz),
+		    (longlong_t)error, (longlong_t)p_term,
+		    (longlong_t)i_term, (longlong_t)d_term,
+		    (u_longlong_t)(cur >> 20), (u_longlong_t)(next >> 20));
+	}
+}
+
+/*
  * Prepare the txg subsystem.
  */
 void
@@ -524,6 +825,9 @@ txg_sync_thread(void *arg)
 	tx_state_t *tx = &dp->dp_tx;
 	callb_cpr_t cpr;
 	clock_t start, delta;
+	txg_adc_t adc;
+	clock_t adc_target;
+	boolean_t adc_initialized = B_FALSE;
 
 	(void) spl_fstrans_mark();
 	txg_thread_enter(tx, &cpr);
@@ -579,8 +883,11 @@ txg_sync_thread(void *arg)
 			txg_thread_wait(tx, &cpr, &tx->tx_quiesce_done_cv, 0);
 		}
 
-		if (tx->tx_exiting)
+		if (tx->tx_exiting) {
+			if (adc_initialized)
+				adc_fini();
 			txg_thread_exit(tx, &cpr, &tx->tx_sync_thread);
+		}
 
 		/*
 		 * Consume the quiesced txg which has been handed off to
@@ -600,10 +907,40 @@ txg_sync_thread(void *arg)
 		mutex_exit(&tx->tx_sync_lock);
 
 		txg_stat_t *ts = spa_txg_history_init_io(spa, txg, dp);
+		uint64_t dirty_flushed = dp->dp_dirty_pertxg[txg & TXG_MASK];
+		uint64_t total_dirty = dp->dp_dirty_total;
 		start = ddi_get_lbolt();
 		spa_sync(spa, txg);
 		delta = ddi_get_lbolt() - start;
 		spa_txg_history_fini_io(spa, ts);
+
+		/*
+		 * Feed the measured sync duration into the adaptive
+		 * dirty ceiling controller.  The target is recomputed
+		 * every txg to pick up runtime tunable changes; the
+		 * controller state is initialized lazily so the
+		 * feature can be enabled at runtime.
+		 */
+		if (zfs_adc_enable) {
+			adc_target = (clock_t)(zfs_txg_timeout * hz) *
+			    zfs_adc_target_sync_pct / 100;
+			if (!adc_initialized) {
+				adc_init(&adc, adc_target);
+				adc_initialized = B_TRUE;
+			}
+			adc_update(&adc, txg, delta, adc_target,
+			    dirty_flushed, total_dirty);
+		} else if (adc_initialized) {
+			/*
+			 * The controller was switched off at runtime:
+			 * restore the boot-time dirty ceiling so stock
+			 * behavior returns, and tear down the state so
+			 * a later re-enable starts fresh.
+			 */
+			zfs_dirty_data_max = adc_dirty_ceil;
+			adc_fini();
+			adc_initialized = B_FALSE;
+		}
 
 		mutex_enter(&tx->tx_sync_lock);
 		tx->tx_synced_txg = txg;
@@ -1097,3 +1434,24 @@ EXPORT_SYMBOL(txg_sync_waiting);
 
 ZFS_MODULE_PARAM(zfs_txg, zfs_txg_, timeout, UINT, ZMOD_RW,
 	"Max seconds worth of delta per txg");
+
+ZFS_MODULE_PARAM(zfs, zfs_, adc_enable, INT, ZMOD_RW,
+	"Enable the adaptive dirty ceiling (ADC) PID controller");
+
+ZFS_MODULE_PARAM(zfs, zfs_, adc_target_sync_pct, UINT, ZMOD_RW,
+	"ADC: target spa_sync duration as a percentage of zfs_txg_timeout");
+
+ZFS_MODULE_PARAM(zfs, zfs_, adc_kp, INT, ZMOD_RW,
+	"ADC: PID proportional gain (x1000)");
+
+ZFS_MODULE_PARAM(zfs, zfs_, adc_ki, INT, ZMOD_RW,
+	"ADC: PID integral gain (x1000)");
+
+ZFS_MODULE_PARAM(zfs, zfs_, adc_kd, INT, ZMOD_RW,
+	"ADC: PID derivative gain (x1000)");
+
+ZFS_MODULE_PARAM(zfs, zfs_, adc_ema_alpha_pct, UINT, ZMOD_RW,
+	"ADC: EMA weight of the newest sync duration sample (percent)");
+
+ZFS_MODULE_PARAM(zfs, zfs_, adc_holdoff_txgs, UINT, ZMOD_RW,
+	"ADC: minimum txgs between dirty_max adjustments");
