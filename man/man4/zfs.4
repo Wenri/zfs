@@ -720,6 +720,50 @@ depends on kernel configuration.
 This is the minimum allocation size that will use scatter (page-based) ABDs.
 Smaller allocations will use linear ABDs.
 .
+.It Sy zfs_adc_enable Ns = Ns Sy 0 Ns | Ns 1 Pq int
+Enable the Adaptive Dirty Ceiling (ADC) controller: a fixed-point PID
+loop that adjusts
+.Sy zfs_dirty_data_max
+once per transaction group so the smoothed
+.Fn spa_sync
+duration tracks
+.Sy zfs_adc_target_sync_pct
+percent of
+.Sy zfs_txg_timeout ,
+bounded between a 153 MiB floor and the boot-time
+.Sy zfs_dirty_data_max
+ceiling.
+Controller state is exposed through the
+.Sy zfs/dynamic_dirty_data_stats
+kstat.
+Setting this back to
+.Sy 0
+restores the boot-time
+.Sy zfs_dirty_data_max .
+.
+.It Sy zfs_adc_target_sync_pct Ns = Ns Sy 75 Ns % Pq uint
+ADC: target
+.Fn spa_sync
+duration as a percentage of
+.Sy zfs_txg_timeout .
+Lower values leave more burst headroom at the cost of peak throughput.
+.
+.It Sy zfs_adc_kp Ns = Ns Sy 200 Pq int
+.It Sy zfs_adc_ki Ns = Ns Sy 15 Pq int
+.It Sy zfs_adc_kd Ns = Ns Sy 100 Pq int
+ADC PID gains (proportional, integral, derivative), scaled by 1000 to
+avoid floating point.
+.
+.It Sy zfs_adc_ema_alpha_pct Ns = Ns Sy 25 Ns % Pq uint
+ADC: weight of the newest
+.Fn spa_sync
+duration sample in the exponential moving average, in percent.
+.
+.It Sy zfs_adc_holdoff_txgs Ns = Ns Sy 2 Pq uint
+ADC: minimum number of transaction groups between two consecutive
+.Sy zfs_dirty_data_max
+adjustments (anti-flapping).
+.
 .It Sy zfs_arc_dnode_limit Ns = Ns Sy 0 Ns B Pq u64
 When the number of bytes consumed by dnodes in the ARC exceeds this number of
 bytes, try to unpin some of it in response to demand for non-metadata.
