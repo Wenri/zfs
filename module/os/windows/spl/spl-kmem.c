@@ -73,6 +73,7 @@ const unsigned int spl_vm_page_free_min = 3500;
 static kcondvar_t spl_free_thread_cv;
 static kmutex_t spl_free_thread_lock;
 static boolean_t spl_free_thread_exit;
+volatile boolean_t spl_free_thread_running = FALSE;
 static volatile _Atomic int64_t spl_free = 0;
 
 static boolean_t spl_event_thread_exit = FALSE;
@@ -4707,6 +4708,8 @@ spl_free_thread()
 	uint64_t recent_lowmem = 0;
 	uint64_t last_disequilibrium = 0;
 
+	spl_free_thread_running = TRUE;
+
 	while (!spl_free_thread_exit) {
 		mutex_exit(&spl_free_thread_lock);
 		boolean_t lowmem = false;
@@ -5162,6 +5165,7 @@ spl_free_thread()
 		    &spl_free_thread_lock, MSEC2NSEC(10), 0, 0);
 		CALLB_CPR_SAFE_END(&cpr, &spl_free_thread_lock);
 	}
+	spl_free_thread_running = FALSE;
 	spl_free_thread_exit = FALSE;
 	dprintf("SPL: spl_free_thread_exit set to FALSE " \
 	    "and exiting: cv_broadcasting\n");
@@ -5771,6 +5775,7 @@ spl_kmem_thread_fini(void)
 		cv_signal(&spl_free_thread_cv);
 		cv_wait(&spl_free_thread_cv, &spl_free_thread_lock);
 	}
+	spl_free_thread_running = FALSE;
 	mutex_exit(&spl_free_thread_lock);
 	cv_destroy(&spl_free_thread_cv);
 	mutex_destroy(&spl_free_thread_lock);
