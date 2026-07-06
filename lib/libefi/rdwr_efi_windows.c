@@ -1990,3 +1990,42 @@ efi_err_check(struct dk_gpt *vtoc)
 		    "no reserved partition found\n");
 	}
 }
+
+/*
+ * Rewrite the header fields of a dk_gpt (typically read from the
+ * backup label of a disk whose primary GPT was corrupted, as Windows
+ * Server 2025 is known to do to ZFS-owned disks) so that a subsequent
+ * efi_write() lays out a standard EFI_NUMPAR-entry GPT for the
+ * current disk geometry.  Partition entries are left untouched;
+ * efi_alloc_and_read() always allocates EFI_NUMPAR entries, so
+ * raising efi_nparts here is safe.
+ */
+int
+efi_repair_vtoc(int fd, struct dk_gpt *vtoc)
+{
+	diskaddr_t capacity = 0;
+	uint_t lbsize = 0;
+	uint64_t disk_last_lba;
+	uint64_t nblocks;
+
+	if (read_disk_info(fd, &capacity, &lbsize) != 0)
+		return (-1);
+
+	disk_last_lba = capacity - 1;
+	nblocks = NBLOCKS(EFI_NUMPAR, lbsize);
+	if ((nblocks * lbsize) < EFI_MIN_ARRAY_SIZE + lbsize)
+		nblocks = EFI_MIN_ARRAY_SIZE / lbsize + 1;
+
+	vtoc->efi_lbasize = lbsize;
+	vtoc->efi_last_lba = disk_last_lba;
+	vtoc->efi_altern_lba = disk_last_lba;
+	vtoc->efi_last_u_lba = disk_last_lba - nblocks;
+	vtoc->efi_nparts = EFI_NUMPAR;
+
+	(void) fprintf(stderr, "%s: capacity %llu blocks, lbsize %u, "
+	    "last_lba %llu, nparts %u\r\n", __func__,
+	    (unsigned long long)capacity, lbsize,
+	    (unsigned long long)disk_last_lba, vtoc->efi_nparts);
+
+	return (0);
+}

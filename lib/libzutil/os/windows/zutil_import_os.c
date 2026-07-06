@@ -100,6 +100,8 @@ zpool_default_import_path[DEFAULT_IMPORT_PATH_SIZE] = {
 };
 
 extern uint64_t GetFileDriveSize(HANDLE);
+HRESULT OfflineDisk(const char *devicePath);
+HRESULT OnlineDisk(const char *devicePath);
 
 static boolean_t
 is_watchdog_dev(char *dev)
@@ -417,6 +419,55 @@ zpool_default_search_paths(size_t *count)
 }
 
 /*
+ * Windows Server 2025 is known to corrupt the primary GPT of ZFS-owned
+ * disks, leaving pools un-importable or un-expandable after a reboot.
+ * Reconstruct the primary label from the backup label: patch the
+ * header for the current disk geometry with the standard 128-entry
+ * layout (efi_repair_vtoc) and let efi_write() rewrite both labels.
+ * The vtoc passed in was read from the backup label, so the partition
+ * entries themselves are preserved.
+ */
+static int
+restore_primary_gpt_from_backup(struct dk_gpt *vtoc, const char *path,
+    const char *physpath)
+{
+	HRESULT hr;
+	int fd;
+	int rval;
+
+	fprintf(stderr, "%s: offlining disk %s\r\n", __func__, physpath);
+	fflush(stderr);
+	OfflineDisk(physpath);
+
+	if ((fd = open(path, O_RDWR | O_DIRECT)) < 0) {
+		fprintf(stderr, "%s: failed to open disk %s\r\n",
+		    __func__, path);
+		(void) OnlineDisk(physpath);
+		return (-1);
+	}
+
+	if (efi_repair_vtoc(fd, vtoc) != 0) {
+		fprintf(stderr, "%s: failed to read disk geometry\r\n",
+		    __func__);
+		(void) close(fd);
+		(void) OnlineDisk(physpath);
+		return (-1);
+	}
+
+	rval = efi_write(fd, vtoc);
+	(void) fsync(fd);
+	fprintf(stderr, "%s: label rewrite status %d\r\n", __func__, rval);
+
+	hr = OnlineDisk(physpath);
+	if (FAILED(hr))
+		fprintf(stderr, "%s: OnlineDisk failed 0x%lx\r\n",
+		    __func__, (unsigned long)hr);
+
+	(void) close(fd);
+	return (rval < 0 ? -1 : 0);
+}
+
+/*
  * Call Windows API to get list of physical disks, and iterate through them
  * finding partitions.
  */
@@ -682,6 +733,7 @@ zpool_find_import_blkid(libpc_handle_t *hdl, pthread_mutex_t *lock,
 
 
 	int primary_num_partitions = 0;
+	boolean_t primary_was_corrupt = B_FALSE;
 
 	// Read Primary, and Backup labels
 	for (int backup = 0; backup <= 1; backup++) {
@@ -701,8 +753,16 @@ zpool_find_import_blkid(libpc_handle_t *hdl, pthread_mutex_t *lock,
 			    vtoc->efi_nparts);
 			fflush(stderr);
 
-			if (!backup)
+			if (!backup) {
 				primary_num_partitions = vtoc->efi_nparts;
+				/*
+				 * A corrupt primary is not an error:
+				 * efi_read() falls back to the backup
+				 * label and flags the vtoc instead.
+				 */
+				primary_was_corrupt = ((vtoc->efi_flags &
+				    EFI_GPT_PRIMARY_CORRUPT) != 0);
+			}
 
 		for (int i = 0; i < vtoc->efi_nparts; i++) {
 
@@ -762,21 +822,70 @@ zpool_find_import_blkid(libpc_handle_t *hdl, pthread_mutex_t *lock,
 			    "backup %d, efi_nparts %u, and primarynum %u\r\n",
 			    backup, vtoc->efi_nparts, primary_num_partitions);
 
+			/*
+			 * primary_was_corrupt means efi_read() could not
+			 * use the primary label and fell back to the
+			 * backup; primary_num_partitions == 128 is the
+			 * known Win2025 signature of a rewritten primary.
+			 * A healthy legacy disk (both labels read 9) is
+			 * left alone; 'zpool import --fix-gpt' handles it.
+			 */
 			if (backup && vtoc && vtoc->efi_nparts == 9 &&
-			    primary_num_partitions == 128) {
+			    (primary_was_corrupt ||
+			    primary_num_partitions == 128)) {
+				STORAGE_DEVICE_NUMBER devnum = { 0 };
+				char physpath[MAXPATHLEN];
+				DWORD bytes = 0;
+
 				fprintf(stderr,
 				    "Windows corrupted Primary EFI/GPT "
 				    "label detected\r\n");
 				fflush(stderr);
-				// vtoc->efi_nparts = 128;
-				// efi_write(disk, vtoc);
+				/*
+				 * OfflineDisk/OnlineDisk match disks by
+				 * their PHYSICALDRIVE device id, not by
+				 * the device-interface path, so resolve
+				 * the device number while the scan handle
+				 * is still open.
+				 */
+				if (DeviceIoControl(disk,
+				    IOCTL_STORAGE_GET_DEVICE_NUMBER,
+				    NULL, 0, &devnum, sizeof (devnum),
+				    &bytes, NULL))
+					snprintf(physpath, sizeof (physpath),
+					    "\\\\.\\PHYSICALDRIVE%lu",
+					    devnum.DeviceNumber);
+				else
+					snprintf(physpath, sizeof (physpath),
+					    "%s",
+					    deviceInterfaceDetailData->
+					    DevicePath);
+				/*
+				 * Our read handle only shares reads; close
+				 * it so the repair path can open the disk
+				 * for writing.
+				 */
+				CloseHandle(disk);
+				disk = INVALID_HANDLE_VALUE;
+				if (restore_primary_gpt_from_backup(vtoc,
+				    deviceInterfaceDetailData->DevicePath,
+				    physpath) < 0)
+					fprintf(stderr, "Reconstruction of "
+					    "Primary EFI/GPT label "
+					    "FAILED\r\n");
+				else
+					fprintf(stderr, "Reconstruction of "
+					    "Primary EFI/GPT label "
+					    "SUCCESSFUL\r\n");
+				fflush(stderr);
 			}
 
 			efi_free(vtoc);
 		} // if !error
 	} // for
 
-			CloseHandle(disk);
+			if (disk != INVALID_HANDLE_VALUE)
+				CloseHandle(disk);
 
 		} else { // Unable to open handle
 			fprintf(stderr,
