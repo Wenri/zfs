@@ -1943,6 +1943,22 @@ This property can only be set to later supported versions.
 See the
 .Nm zfs Cm upgrade
 command.
+.It Sy volsectorsize Ns = Ns Ar 512 Ns | Ns Ar 4096
+For volumes on Windows, specifies the logical sector size the volume
+reports to the host via SCSI READ CAPACITY 16.
+Set it to
+.Ar 4096
+to present the volume as a 4K-native device and avoid
+read-modify-write overhead on 4K-native storage.
+The default is
+.Ar 512 ;
+volumes created before this property existed always report
+.Ar 512 .
+It can only be set at volume creation time, since changing the
+reported sector size of a volume that already carries a partition
+table or filesystem would invalidate that layout.
+This property is only honored by the Windows port and is ignored on
+other platforms.
 .It Sy volsize Ns = Ns Ar size
 For volumes, specifies the logical size of the volume.
 By default, creating a volume establishes a reservation of equal size.
