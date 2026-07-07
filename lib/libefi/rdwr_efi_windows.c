@@ -2011,6 +2011,9 @@ efi_repair_vtoc(int fd, struct dk_gpt *vtoc)
 	if (read_disk_info(fd, &capacity, &lbsize) != 0)
 		return (-1);
 
+	if (capacity == 0 || lbsize == 0)
+		return (-1);
+
 	disk_last_lba = capacity - 1;
 	nblocks = NBLOCKS(EFI_NUMPAR, lbsize);
 	if ((nblocks * lbsize) < EFI_MIN_ARRAY_SIZE + lbsize)

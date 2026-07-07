@@ -255,7 +255,8 @@ zvol_create_cb(objset_t *os, void *arg, cred_t *cr, dmu_tx_t *tx)
 	ASSERT0(error);
 
 	uint64_t volsectorsize = 512;
-	(void) nvlist_lookup_uint64(nvprops, "volsectorsize", &volsectorsize);
+	(void) nvlist_lookup_uint64(nvprops,
+	    zfs_prop_to_name(ZFS_PROP_VOLSECTORSIZE), &volsectorsize);
 	error = zap_update(os, ZVOL_ZAP_OBJ, "sector_size", 8, 1,
 	    &volsectorsize, tx);
 	ASSERT0(error);

@@ -458,12 +458,12 @@ restore_primary_gpt_from_backup(struct dk_gpt *vtoc, const char *path,
 	(void) fsync(fd);
 	fprintf(stderr, "%s: label rewrite status %d\r\n", __func__, rval);
 
+	(void) close(fd);
 	hr = OnlineDisk(physpath);
 	if (FAILED(hr))
 		fprintf(stderr, "%s: OnlineDisk failed 0x%lx\r\n",
 		    __func__, (unsigned long)hr);
 
-	(void) close(fd);
 	return (rval < 0 ? -1 : 0);
 }
 

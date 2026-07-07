@@ -1954,6 +1954,14 @@ The default is
 .Ar 512 ;
 volumes created before this property existed always report
 .Ar 512 .
+.Sy volsectorsize
+must not exceed
+.Sy volblocksize ,
+and
+.Sy volblocksize
+must be an integer multiple of
+.Sy volsectorsize
+(volume creation fails if either constraint is violated).
 It can only be set at volume creation time, since changing the
 reported sector size of a volume that already carries a partition
 table or filesystem would invalidate that layout.
