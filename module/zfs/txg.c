@@ -934,9 +934,10 @@ txg_sync_thread(void *arg)
 		} else if (adc_initialized) {
 			/*
 			 * The controller was switched off at runtime:
-			 * restore the boot-time dirty ceiling so stock
-			 * behavior returns, and tear down the state so
-			 * a later re-enable starts fresh.
+			 * restore the zfs_dirty_data_max value captured
+			 * when ADC was first enabled, so stock behavior
+			 * returns, and tear down the state so a later
+			 * re-enable starts fresh.
 			 */
 			zfs_dirty_data_max = adc_dirty_ceil;
 			adc_fini();
