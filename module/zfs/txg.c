@@ -172,7 +172,7 @@ static dynamic_dirty_data_stats_t dynamic_dirty_data_stats = {
 
 static kstat_t *adc_ksp;
 static uint32_t adc_active;	/* sync threads with an active controller */
-static uint64_t adc_dirty_ceil;	/* boot-time zfs_dirty_data_max */
+static uint64_t adc_dirty_ceil;	/* zfs_dirty_data_max at first adc_init() */
 static int64_t kstat_adc_target;
 static int64_t kstat_spa_sync_time;
 static uint64_t kstat_data_flushed_per_sync;
@@ -242,8 +242,9 @@ adc_init(txg_adc_t *adc, clock_t target_ticks)
 	memset(adc, 0, sizeof (*adc));
 
 	/*
-	 * The ceiling is the boot-time zfs_dirty_data_max, captured
-	 * before any controller instance has adjusted it.
+	 * The ceiling is the value of zfs_dirty_data_max at the time
+	 * ADC was first enabled, captured before any controller instance
+	 * has adjusted it.
 	 */
 	if (adc_dirty_ceil == 0)
 		adc_dirty_ceil = zfs_dirty_data_max;
