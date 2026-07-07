@@ -1,0 +1,237 @@
+#
+# windows-release: build the x64-Release installer, sign the driver and the
+# installer with the repository's STABLE test-signing certificate
+# (contrib/windows/TestCert/test_sign_cert_nopass.pfx, thumbprint
+# e96bb80ace0b559239c89a425ba0b58d5590fdb3 -- the CMake default signer), and
+# publish a GitHub Release with the installer plus the matching PUBLIC
+# certificate (no private key).
+#
+# Manually triggered. It uses the Actions GITHUB_TOKEN (contents: write) to
+# create the release, so it does not depend on any personal access token.
+# Run it against the zfs-Windows-2.4.1-release branch, e.g.:
+#   gh workflow run windows-release.yml --ref zfs-Windows-2.4.1-release \
+#     -f tag=zfswin-2.4.1
+#
+# The build steps mirror windows-build.yml; the only differences are the
+# signing certificate, the fixed Release configuration, the public-cert
+# export, and the release-publishing step.
+#
+
+name: windows-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to create (e.g. zfswin-2.4.1)
+        type: string
+        default: zfswin-2.4.1
+      prerelease:
+        description: Mark as pre-release
+        type: boolean
+        default: true
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      BUILD_CFG: x64-Release
+      # Stable committed OpenZFS test-signing certificate thumbprint.
+      OPENZFS_TESTCERT_SHA1: e96bb80ace0b559239c89a425ba0b58d5590fdb3
+
+    steps:
+      - name: Enter MSVC dev environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Checkout OpenZFS
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout OpenSSL
+        uses: actions/checkout@v5
+        with:
+          repository: openzfsonwindows/openssl
+          ref: openssl-3.5.5
+          path: openssl
+
+      - name: Import OpenZFS test signing certificate
+        shell: pwsh
+        run: |
+          $pfx = "${{ github.workspace }}\contrib\windows\TestCert\test_sign_cert_nopass.pfx"
+          if (-not (Test-Path $pfx)) { throw "TestCert PFX not found: $pfx" }
+
+          # The _nopass PFX has an empty password.
+          $empty = New-Object System.Security.SecureString
+          $cert = Import-PfxCertificate -FilePath $pfx `
+            -CertStoreLocation Cert:\CurrentUser\My -Password $empty
+          $thumb = $cert.Thumbprint
+          Write-Host "Imported signing cert thumbprint: $thumb"
+
+          if ($thumb -ine "$env:OPENZFS_TESTCERT_SHA1") {
+            throw "Imported thumbprint $thumb does not match expected $env:OPENZFS_TESTCERT_SHA1"
+          }
+
+          # Trust it on the runner so the install smoke test can load the driver.
+          Import-PfxCertificate -FilePath $pfx `
+            -CertStoreLocation Cert:\LocalMachine\Root -Password $empty | Out-Null
+          Import-PfxCertificate -FilePath $pfx `
+            -CertStoreLocation Cert:\LocalMachine\TrustedPublisher -Password $empty | Out-Null
+
+          "OPENZFS_SIGNTOOL_CERTSTORE=My" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "OPENZFS_SIGNTOOL_CERTNAME=OpenZFS Test Signing Certificate" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "OPENZFS_SIGNTOOL_SHA1=$thumb" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "OPENZFS_SIGNTOOL_TSA=http://timestamp.digicert.com" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Install WDK via NuGet
+        shell: pwsh
+        run: |
+          nuget install Microsoft.Windows.WDK.x64 `
+            -Version 10.0.26100.6584 `
+            -OutputDirectory "${{ github.workspace }}\packages" `
+            -Source https://api.nuget.org/v3/index.json
+
+      - name: Set WDK and SDK roots
+        shell: pwsh
+        run: |
+          $wdk = Get-ChildItem "${{ github.workspace }}\packages" -Directory |
+            Where-Object { $_.Name -like "Microsoft.Windows.WDK.x64.*" } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+
+          $sdk = Get-ChildItem "${{ github.workspace }}\packages" -Directory |
+            Where-Object { $_.Name -like "Microsoft.Windows.SDK.CPP.*" -and $_.Name -notlike "*.x64.*" } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+
+          if (-not $wdk) { throw "WDK package directory not found" }
+          if (-not $sdk) { throw "SDK package directory not found" }
+
+          $env:WDKContentRoot = Join-Path $wdk.FullName "c"
+          $env:WINSDK_NUGET_ROOT = Join-Path $sdk.FullName "c"
+
+          "WDKContentRoot=$env:WDKContentRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "WINSDK_NUGET_ROOT=$env:WINSDK_NUGET_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          cmake -G "Ninja" `
+            -B "${{ github.workspace }}/out/build/${{ env.BUILD_CFG }}" `
+            "${{ github.workspace }}" `
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+            -DOPENSSL_ROOT_DIR="${{ github.workspace }}/openssl" `
+            -DOPENSSL_INCLUDE_DIR="${{ github.workspace }}/openssl/include/x64" `
+            -DCRYPTO_STATIC_TEST="${{ github.workspace }}/openssl/lib/VC/x64/MTd/libcrypto_static.lib" `
+            -DLIB_EAY_DEBUG="${{ github.workspace }}/openssl/lib/VC/x64/MTd/libcrypto_static.lib" `
+            -DLIB_EAY_RELEASE="${{ github.workspace }}/openssl/lib/VC/x64/MT/libcrypto_static.lib" `
+            -DSSL_EAY_DEBUG="${{ github.workspace }}/openssl/lib/VC/x64/MTd/libssl_static.lib" `
+            -DSSL_EAY_RELEASE="${{ github.workspace }}/openssl/lib/VC/x64/MT/libssl_static.lib" `
+            -DOPENZFS_SIGNTOOL_CERTSTORE="$env:OPENZFS_SIGNTOOL_CERTSTORE" `
+            -DOPENZFS_SIGNTOOL_CERTNAME="$env:OPENZFS_SIGNTOOL_CERTNAME" `
+            -DOPENZFS_SIGNTOOL_SHA1="$env:OPENZFS_SIGNTOOL_SHA1" `
+            -DOPENZFS_SIGNTOOL_TSA="$env:OPENZFS_SIGNTOOL_TSA"
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake --build "${{ github.workspace }}/out/build/${{ env.BUILD_CFG }}" --parallel
+
+      - name: Build Inno installer
+        shell: pwsh
+        working-directory: ${{ github.workspace }}\contrib\windows\Inno.Setup
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            .\ZFSInstall-debug.iss `
+            "/DBuildCfg=${{ env.BUILD_CFG }}" `
+            "/Ssigntoolc=${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe sign /v /fd sha256 /sha1 $env:OPENZFS_SIGNTOOL_SHA1 /tr http://timestamp.digicert.com /td sha256 `$f" `
+            | Tee-Object -FilePath "${{ github.workspace }}\iscc.log"
+
+      - name: Find generated installer
+        id: innoout
+        shell: pwsh
+        run: |
+          $f = Get-ChildItem "${{ github.workspace }}\contrib\windows" -Filter *.exe -File |
+               Sort-Object LastWriteTime -Descending |
+               Select-Object -First 1
+          if (-not $f) { throw "No installer EXE found" }
+          "installer=$($f.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Installer: $($f.FullName)"
+
+      - name: Export public signing certificate
+        id: cert
+        shell: pwsh
+        run: |
+          # PUBLIC certificate only (no private key) - this is what users import.
+          $out = "${{ github.workspace }}\OpenZFS-TestSigning.cer"
+          Export-Certificate `
+            -Cert "Cert:\CurrentUser\My\$env:OPENZFS_SIGNTOOL_SHA1" `
+            -FilePath $out -Type CERT | Out-Null
+          if (-not (Test-Path $out)) { throw "Failed to export public certificate" }
+          "cer=$out" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Public cert: $out"
+
+      - name: Generate checksums
+        id: sums
+        shell: pwsh
+        run: |
+          $installer = "${{ steps.innoout.outputs.installer }}"
+          $cer = "${{ steps.cert.outputs.cer }}"
+          $sumsFile = "${{ github.workspace }}\SHA256SUMS.txt"
+          Remove-Item $sumsFile -ErrorAction SilentlyContinue
+          foreach ($f in @($installer, $cer)) {
+            $h = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
+            "$h  $([System.IO.Path]::GetFileName($f))" | Out-File -FilePath $sumsFile -Append -Encoding ascii
+          }
+          Get-Content $sumsFile
+          "sums=$sumsFile" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = @"
+          OpenZFS on Windows - automated build from commit ${{ github.sha }}.
+
+          This build is TEST-SIGNED with the OpenZFS test-signing certificate
+          (thumbprint $env:OPENZFS_SIGNTOOL_SHA1). To install it:
+
+          1. Import OpenZFS-TestSigning.cer into 'Trusted Root Certification
+             Authorities' AND 'Trusted Publishers' in the Local Machine store.
+          2. Enable test signing:  bcdedit.exe /set TESTSIGNING ON  then reboot.
+          3. Run the installer.
+
+          OpenZFS-TestSigning.cer is the PUBLIC certificate only (no private key)
+          and matches the Authenticode signature on both the installer and the
+          driver. Verify downloads against SHA256SUMS.txt.
+
+          This is a test-signed build for evaluation. A production build must be
+          signed by Microsoft via the attestation process; see
+          contrib/windows/attestation.sh.
+          "@
+          $notesFile = "${{ github.workspace }}\release-notes.txt"
+          $notes | Out-File -FilePath $notesFile -Encoding utf8
+
+          $ghArgs = @(
+            "release", "create", "${{ inputs.tag }}",
+            "${{ steps.innoout.outputs.installer }}",
+            "${{ steps.cert.outputs.cer }}",
+            "${{ steps.sums.outputs.sums }}",
+            "--repo", "${{ github.repository }}",
+            "--target", "${{ github.sha }}",
+            "--title", "OpenZFS on Windows ${{ inputs.tag }} (test-signed)",
+            "--notes-file", $notesFile
+          )
+          if ("${{ inputs.prerelease }}" -eq "true") { $ghArgs += "--prerelease" }
+
+          & gh @ghArgs
