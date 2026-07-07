@@ -730,16 +730,17 @@ duration tracks
 .Sy zfs_adc_target_sync_pct
 percent of
 .Sy zfs_txg_timeout ,
-bounded between a 153 MiB floor and the boot-time
+bounded between a 153 MiB floor and the
 .Sy zfs_dirty_data_max
-ceiling.
+value at the time ADC was first enabled.
 Controller state is exposed through the
 .Sy zfs/dynamic_dirty_data_stats
 kstat.
 Setting this back to
 .Sy 0
-restores the boot-time
-.Sy zfs_dirty_data_max .
+restores the
+.Sy zfs_dirty_data_max
+value captured when ADC was first enabled.
 .
 .It Sy zfs_adc_target_sync_pct Ns = Ns Sy 75 Ns % Pq uint
 ADC: target

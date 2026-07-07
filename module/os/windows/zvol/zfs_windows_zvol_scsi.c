@@ -579,7 +579,8 @@ ScsiOpReadCapacity16(
 	blockSize = zv->zv_zso->zso_logical_sector_size;
 	if (blockSize == 0)
 		blockSize = MP_BLOCK_SIZE;
-	maxBlocks = (zv->zv_volsize / blockSize) - 1;
+	maxBlocks = zv->zv_volsize >= blockSize ?
+	    (zv->zv_volsize / blockSize) - 1 : 0;
 
 	dprintf("%s:%d Block Size: 0x%x Total Blocks: 0x%llx targetid:%d "
 	    "lun:%d, volname:%s, zv_volsize=%llu\n", __func__, __LINE__,
